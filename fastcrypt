@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+
+import pygit2
+import hashlib
+import subprocess
+import os
+import sys
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
+
+def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
+    cipher = Cipher(algorithms.AES(key[0:32]), modes.CBC(key[32:48]), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded_data = padder.update(data) + padder.finalize()
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+    return ciphertext
+
+def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key[0:32]), modes.CBC(key[32:48]), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted_padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    decrypted_data = unpadder.update(decrypted_padded_data) + unpadder.finalize()
+    return decrypted_data
+
+def calcraw(clear, repo):
+    data = clear.id.raw + [b'1', b'c', b't', b'b', b'T'][clear.type] + clear.read_raw()
+    return repo.__contains__(hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest())
+
+def cryptraw(clear, collector, repo):
+    cryptid = repo.create_blob(encryptdata(clear.id.raw + [b'?', b'c', b't', b'b', b'T'][clear.type] + clear.read_raw(), key))
+    collector.insert(str(len(collector)), cryptid, pygit2.GIT_FILEMODE_BLOB)
+    return cryptid
+
+def encryptblob(blob, collector, repo):
+    cryptraw(blob, collector, repo)
+
+def encrypttree(tree, collector, repo):
+    for obj in tree:
+        if obj.type == pygit2.enums.ObjectType.TREE:
+            encrypttree(obj, collector, repo)
+        elif obj.type == pygit2.enums.ObjectType.BLOB:
+            encryptblob(obj, collector, repo)
+    cryptraw(tree, collector, repo)
+
+def encryptcommit(commit, repo):
+    collector = repo.TreeBuilder()
+    encrypttree(commit.tree, collector, repo)
+    cryptraw(commit, collector, repo)
+    colid = collector.write()
+    cryptparents = list(map(lambda c: encryptcommit(c, repo), commit.parents))
+    nobody = pygit2.Signature('nobody', 'nobody@nowhere.org', time=0, offset=0)
+    cryptcommit = repo.create_commit(None, nobody, nobody, 'secret', colid, cryptparents)
+    return cryptcommit
+
+def encrypttag(tag, repo):
+    collector = repo.TreeBuilder()
+    crypttarget = encryptcommit(tag.get_object(), repo)
+    cryptraw(tag, collector, repo)
+    colid = collector.write()
+    nobody = pygit2.Signature('nobody', 'nobody@nowhere.org', time=0, offset=0)
+    cryptcommit = repo.create_commit(None, nobody, nobody, 'secret', colid, [crypttarget])
+    return cryptcommit
+
+def encryptref(ref, sourcerepo, targetrepo):
+    thing = sourcerepo.revparse_single(ref)
+    if thing.type == pygit2.enums.ObjectType.COMMIT:
+        return encryptcommit(thing, targetrepo)
+    elif thing.type == pygit2.enums.ObjectType.TAG:
+        return encrypttag(thing, targetrepo)
+    else:
+        raise ValueError('Unsupported object type')
+
+def decryptref(cryptref, sourcerepo, targetrepo, targetname):
+    return decryptobj(sourcerepo.revparse_single(cryptref), targetrepo, targetname)
+
+def decryptobj(cryptdata, targetrepo, targetname):
+    for obj in cryptdata.tree:
+        raw = decryptdata(obj.read_raw(), key)
+        if raw[20] == b'b'[0]:
+            targetrepo.create_blob(raw[21:])
+            #subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'blob', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+        elif raw[20] == b't'[0]:
+            subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'tree', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+        elif raw[20] == b'c'[0]:
+            commit = subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'commit', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+        elif raw[20] == b'T'[0]:
+            commit = subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'tag', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+        else:
+            print(raw[20:21])
+            break
+    obj = targetrepo.get(commit)
+    if obj.type == pygit2.enums.ObjectType.COMMIT:
+        missing = False
+        for parent in obj.parent_ids:
+            if not targetrepo.__contains__(parent):
+                missing = True
+                break
+        if missing:
+            for parent in cryptdata.parents:
+                decryptobj(parent, targetrepo, targetname)
+    elif obj.type == pygit2.enums.ObjectType.TAG:
+        if not targetrepo.__contains__(obj.target):
+            decryptobj(cryptdata.parents[0], targetrepo, targetname)
+    return commit
+
+def makekey(repo):
+    try:
+        cryptedkey = repo.get(repo.revparse_single('refs/tags/key').id).read_raw()
+        return subprocess.check_output(['gpg', '-d'], input=cryptedkey)
+    except KeyError:
+        pass
+    key = os.urandom(48)
+    cryptedkey = subprocess.check_output(['gpg', '-e', '-r', '5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7', '-r', 'F2AE0B6CB4089F15A217F12D121F59FB963341A4'], input=key)
+    keyfile = repo.create_blob(cryptedkey)
+    repo.create_reference('refs/tags/key', keyfile, force=True)
+    return key
+
+operation = sys.argv[1]
+what = sys.argv[2]
+source = sys.argv[3]
+target = sys.argv[4]
+
+sourcerepo = pygit2.Repository(source)
+targetrepo = pygit2.Repository(target)
+
+if operation[0:1] == 'e':
+    key = makekey(targetrepo)
+    secret = encryptref(what, sourcerepo, targetrepo)
+    print(secret)
+    targetrepo.create_reference(what, secret, force=True)
+elif operation[0:1] == 'd':
+    key = makekey(sourcerepo)
+    public = decryptref(what, sourcerepo, targetrepo, target)
+    print(public)
+    targetrepo.create_reference(what, public, force=True)
+else:
+    raise
