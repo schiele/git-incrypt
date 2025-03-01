@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
+'''
+Encrypt git branches
+'''
 
-import pygit2
-import hashlib
 import subprocess
 import os
 import sys
+import pygit2
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 def progressbar(progress, total, length=50):
+    'print a progress bar'
     if not total:
         sys.stdout.write('\r' + ' ' * (length + 7) + '\r')
         sys.stdout.flush()
         return
     percent = progress / total
-    bar = '█' * int(percent * length) + '-' * (length - int(percent * length))
-    sys.stdout.write(f'\r|{bar}| {percent:.0%}')
+    pbar = '█' * int(percent * length) + '-' * (length - int(percent * length))
+    sys.stdout.write(f'\r|{pbar}| {percent:.0%}')
     sys.stdout.flush()
 
 def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
+    'encrypt raw data'
     cipher = Cipher(algorithms.AES(key[0:32]), modes.CBC(key[32:48]), backend=default_backend())
     encryptor = cipher.encryptor()
     padder = padding.PKCS7(algorithms.AES.block_size).padder()
@@ -28,6 +32,7 @@ def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
     return ciphertext
 
 def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
+    'decrypt raw data'
     cipher = Cipher(algorithms.AES(key[0:32]), modes.CBC(key[32:48]), backend=default_backend())
     decryptor = cipher.decryptor()
     decrypted_padded_data = decryptor.update(ciphertext) + decryptor.finalize()
@@ -35,177 +40,205 @@ def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
     decrypted_data = unpadder.update(decrypted_padded_data) + unpadder.finalize()
     return decrypted_data
 
-def calcraw(clear, repo):
-    data = clear.id.raw + [b'1', b'c', b't', b'b', b'T'][clear.type] + clear.read_raw()
-    return repo.__contains__(hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest())
-
-def cryptraw(clear, collector, repo, cryptcache):
-    cryptid = repo.create_blob(encryptdata(clear.id.raw + [b'?', b'c', b't', b'b', b'T'][clear.type] + clear.read_raw(), key))
-    collector.insert(str(len(collector)), cryptid, pygit2.GIT_FILEMODE_BLOB)
+def cryptraw(clear, key, collector, repo, cryptcache):
+    'encrypt a raw object'
+    cryptid = repo.create_blob(encryptdata(
+        clear.id.raw + [b'?', b'c', b't', b'b', b'T'][clear.type] + clear.read_raw(), key))
+    collector.insert(str(len(collector)), cryptid, pygit2.enums.FileMode.BLOB)
     cryptcache[clear.id] = True
 
-def encryptblob(blob, collector, repo, cryptcache):
+def encryptblob(blob, key, collector, repo, cryptcache):
+    'encrypt a blob'
     if blob.id in cryptcache:
         return
-    cryptraw(blob, collector, repo, cryptcache)
+    cryptraw(blob, key, collector, repo, cryptcache)
 
-def encrypttree(tree, collector, repo, cryptcache):
+def encrypttree(tree, key, collector, repo, cryptcache):
+    'encrypt a tree'
     if tree.id in cryptcache:
         return
     for obj in tree:
         if obj.type == pygit2.enums.ObjectType.TREE:
-            encrypttree(obj, collector, repo, cryptcache)
+            encrypttree(obj, key, collector, repo, cryptcache)
         elif obj.type == pygit2.enums.ObjectType.BLOB:
-            encryptblob(obj, collector, repo, cryptcache)
-    cryptraw(tree, collector, repo, cryptcache)
+            encryptblob(obj, key, collector, repo, cryptcache)
+    cryptraw(tree, key, collector, repo, cryptcache)
 
-def encryptcommit(commit, repo, processed, cryptcache):
+def encryptcommit(commit, key, repo, processed, cryptcache):
+    'encrypt a commit'
     collector = repo.TreeBuilder()
-    encrypttree(commit.tree, collector, repo, cryptcache)
-    cryptraw(commit, collector, repo, cryptcache)
+    encrypttree(commit.tree, key, collector, repo, cryptcache)
+    cryptraw(commit, key, collector, repo, cryptcache)
     colid = collector.write()
     cryptparents = list(map(lambda c: processed[c], commit.parent_ids))
-    nobody = pygit2.Signature('nobody', 'nobody@nowhere.org', time=0, offset=0)
-    processed[commit.id.__str__()] = repo.create_commit(None, nobody, nobody, 'secret', colid, cryptparents).__str__()
+    nobody = pygit2.repository.Signature('nobody', 'nobody@nowhere.org', time=0, offset=0)
+    processed[str(commit.id)] = str(repo.create_commit(
+        None, nobody, nobody, 'secret', colid, cryptparents))
 
-def encrypttag(tag, repo, processed, cryptcache):
+def encrypttag(tag, key, repo, processed, cryptcache):
+    'encrypt a tag'
     collector = repo.TreeBuilder()
-    cryptraw(tag, collector, repo, cryptcache)
+    cryptraw(tag, key, collector, repo, cryptcache)
     colid = collector.write()
-    nobody = pygit2.Signature('nobody', 'nobody@nowhere.org', time=0, offset=0)
-    processed[tag.id.__str__()] = repo.create_commit(None, nobody, nobody, 'secret', colid, [processed[tag.target]]).__str__()
+    nobody = pygit2.repository.Signature('nobody', 'nobody@nowhere.org', time=0, offset=0)
+    processed[str(tag.id)] = str(repo.create_commit(
+        None, nobody, nobody, 'secret', colid, [processed[tag.target]]))
 
 def iscomplete(obj, processed):
+    'check if processing is complete'
     if obj.type == pygit2.enums.ObjectType.COMMIT:
         for p in obj.parents:
             if p.id not in processed:
                 return False
         return True
-    elif obj.type == pygit2.enums.ObjectType.TAG:
+    if obj.type == pygit2.enums.ObjectType.TAG:
         return obj.target in processed
-    else:
-        raise
+    raise TypeError(f'Unexpected type {obj.type_str} in completeness check')
 
-def register(obj, child, found, pending, ready, processed, children):
+def register(obj, child, status, children):
+    'register new object'
     if obj.id not in children:
         children[obj.id] = []
     if child:
         children[obj.id].append(child)
-    if all(obj.id not in d for d in (found, pending, ready, processed)):
-        found[obj.id] = obj
+    if all(obj.id not in d for d in status):
+        status[0][obj.id] = obj
 
-def encryptref(refs, sourcerepo, targetrepo):
-    found = {}
-    pending = {}
-    ready = {}
-    processed = readmap(targetrepo)
+def encryptref(repolocs, refs):
+    'encrypt references'
+    repos = list(map(pygit2.Repository, repolocs))
+
+    key = makekey(repos[1])
+    # [ found, pending, ready, processed ]
+    status = [{}, {}, {}, readmap(key, repos[1])]
     children = {}
     cryptcache = {}
 
-    inits = list(map(sourcerepo.revparse_single, refs))
+    inits = list(map(lambda r: repos[0].revparse_single(r[0]), refs))
     for init in inits:
-        register(init, None, found, pending, ready, processed, children)
-    while(found):
-        id, obj = found.popitem()
+        register(init, None, status, children)
+    while status[0]:
+        oid, obj = status[0].popitem()
         if obj.type == pygit2.enums.ObjectType.COMMIT:
             for p in obj.parents:
-                register(p, obj, found, pending, ready, processed, children)
+                register(p, obj, status, children)
         elif obj.type == pygit2.enums.ObjectType.TAG:
-            register(obj.get_object(), obj, found, pending, ready, processed, children)
+            register(obj.get_object(), obj, status, children)
         else:
-            raise
-        if iscomplete(obj, processed):
-            ready[id] = obj
+            raise TypeError(f'Unexpected type {obj.type_str} in git history')
+        if iscomplete(obj, status[3]):
+            status[2][oid] = obj
         else:
-            pending[id] = obj
-    total = len(pending) + len(ready)
-    totalignore = len(processed)
-    while(ready):
-        id, obj = ready.popitem()
+            status[1][oid] = obj
+    totals = [len(status[1]) + len(status[2]), len(status[3])]
+    while status[2]:
+        oid, obj = status[2].popitem()
         if obj.type == pygit2.enums.ObjectType.COMMIT:
-            encryptcommit(obj, targetrepo, processed, cryptcache)
+            encryptcommit(obj, key, repos[1], status[3], cryptcache)
         elif obj.type == pygit2.enums.ObjectType.TAG:
-            encrypttag(obj, targetrepo, processed, cryptcache)
+            encrypttag(obj, key, repos[1], status[3], cryptcache)
         else:
-            raise ValueError('Unsupported object type')
-        for c in children[id]:
-            if c.id not in pending:
+            raise TypeError(f'Unexpected type {obj.type_str} in git history')
+        for c in children[oid]:
+            if c.id not in status[1]:
                 continue
-            if iscomplete(c, processed):
-                ready[c.id] = pending.pop(c.id)
-        progressbar(len(processed) - totalignore, total)
+            if iscomplete(c, status[3]):
+                status[2][c.id] = status[1].pop(c.id)
+        progressbar(len(status[3]) - totals[1], totals[0])
     progressbar(0, 0)
-    if len(found) + len(pending) + len(ready) > 0:
-        print(f'found: {found}')
-        print(f'pending: {pending}')
-        print(f'ready: {ready}')
-        raise
-    writemap(processed, targetrepo)
-    return list(map(lambda i: processed[i.id], inits))
+    if len(status[0]) + len(status[1]) + len(status[2]) > 0:
+        print(f'found: {status[0]}')
+        print(f'pending: {status[1]}')
+        print(f'ready: {status[2]}')
+        raise RuntimeError('Not all data got properly processed')
+    writemap(status[3], key, repos[1])
+    for i, what in enumerate(whats):
+        repos[1].create_reference(what[1], status[3][inits[i].id], force=True)
 
-def decryptref(cryptrefs, sourcerepo, targetrepo, targetname):
+def clihash(type, raw, targetname):
+    'call external git client for not implemented raw hasing'
+    return subprocess.check_output(
+            ['git', '-C', targetname, 'hash-object', '-t', type, '-w', '--stdin'],
+            input=raw[21:]).decode('utf-8').strip()
+
+def decryptref(repolocs, refs):
+    'decrypt references'
+    repos = list(map(pygit2.Repository, repolocs))
+
     found = {}
     cryptmap = {}
-    inits = list(map(sourcerepo.revparse_single, cryptrefs))
+
+    key = getkey(repos[0])
+    inits = list(map(lambda r: repos[0].revparse_single(r[0]), refs))
     for init in inits:
         found[init.id] = init
-    while(found):
-        id, cryptdata = found.popitem()
+    while found:
+        oid, cryptdata = found.popitem()
         for obj in cryptdata.tree:
             raw = decryptdata(obj.read_raw(), key)
             if raw[20] == b'b'[0]:
-                targetrepo.create_blob(raw[21:])
-                #subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'blob', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+                repos[1].create_blob(raw[21:])
             elif raw[20] == b't'[0]:
-                subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'tree', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+                clihash('tree', raw, repolocs[1])
             elif raw[20] == b'c'[0]:
-                commit = subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'commit', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+                commit = clihash('commit', raw, repolocs[1])
             elif raw[20] == b'T'[0]:
-                commit = subprocess.check_output(['git', '-C', targetname, 'hash-object', '-t', 'tag', '-w', '--stdin'], input=raw[21:]).decode('utf-8').strip()
+                commit = clihash('tag', raw, repolocs[1])
             else:
                 print(raw[20:21])
                 raise
-        cryptmap[id] = commit
-        obj = targetrepo.get(commit)
+        cryptmap[oid] = commit
+        obj = repos[1].get(commit)
         if obj.type == pygit2.enums.ObjectType.COMMIT:
             missing = False
             for parent in obj.parent_ids:
-                if not targetrepo.__contains__(parent):
+                if not parent in repos[1]:
                     missing = True
                     break
             if missing:
                 for parent in cryptdata.parents:
                     found[parent.id] = parent
         elif obj.type == pygit2.enums.ObjectType.TAG:
-            if not targetrepo.__contains__(obj.target):
+            if not obj.target in repos[1]:
                 found[cryptdata.parent_ids[0]] = cryptdata.parents[0]
-    return list(map(lambda i: cryptmap[i.id], inits))
+    for i, what in enumerate(whats):
+        repos[1].create_reference(what[1], cryptmap[inits[i].id], force=True)
+
+def getkey(repo):
+    'retrieve an existing key'
+    cryptedkey = repo.get(repo.revparse_single('refs/tags/key').id).read_raw()
+    return subprocess.check_output(['gpg', '-q', '-d'], input=cryptedkey)
 
 def makekey(repo):
+    'make a new key or retrieve an existing one'
     try:
-        cryptedkey = repo.get(repo.revparse_single('refs/tags/key').id).read_raw()
-        return subprocess.check_output(['gpg', '-q', '-d'], input=cryptedkey)
+        return getkey(repo)
     except KeyError:
         pass
     key = os.urandom(48)
-    cryptedkey = subprocess.check_output(['gpg', '-q', '-e', '-r', '5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7', '-r', 'F2AE0B6CB4089F15A217F12D121F59FB963341A4'], input=key)
+    cryptedkey = subprocess.check_output([
+        'gpg', '-q', '-e',
+        '-r', '5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7',
+        '-r', 'F2AE0B6CB4089F15A217F12D121F59FB963341A4'], input=key)
     keyfile = repo.create_blob(cryptedkey)
     repo.create_reference('refs/tags/key', keyfile, force=True)
     return key
 
-def readmap(repo):
+def readmap(key, repo):
+    'read the mapping table'
     processed = {}
     try:
         rawdata = decryptdata(repo.get(repo.revparse_single('refs/tags/map').id).read_raw(), key)
         for i in range(0, len(rawdata), 40):
             crypt = rawdata[i+20:i+40].hex()
-            if repo.__contains__(crypt):
+            if crypt in repo:
                 processed[rawdata[i:i+20].hex()] = crypt
     except KeyError:
         pass
     return processed
 
-def writemap(processed, repo):
+def writemap(processed, key, repo):
+    'write the mapping table'
     rawdata = b''
     for a, b in processed.items():
         rawdata += bytes.fromhex(a) + bytes.fromhex(b)
@@ -213,27 +246,15 @@ def writemap(processed, repo):
     repo.create_reference('refs/tags/map', mapfile, force=True)
 
 operation = sys.argv[1]
-source = sys.argv[2]
-target = sys.argv[3]
+reponames = sys.argv[2:4]
 whats = []
-wheres = []
 for what in sys.argv[4:]:
     elements = what.split(':', 1)
-    whats.append(elements[0])
-    wheres.append(elements[len(elements)-1])
-
-sourcerepo = pygit2.Repository(source)
-targetrepo = pygit2.Repository(target)
+    whats.append((elements[0], elements[len(elements)-1]))
 
 if operation[0:1] == 'e':
-    key = makekey(targetrepo)
-    secret = encryptref(whats, sourcerepo, targetrepo)
-    for i in range(0, len(wheres)):
-        targetrepo.create_reference(wheres[i], secret[i], force=True)
+    encryptref(reponames, whats)
 elif operation[0:1] == 'd':
-    key = makekey(sourcerepo)
-    public = decryptref(whats, sourcerepo, targetrepo, target)
-    for i in range(0, len(wheres)):
-        targetrepo.create_reference(wheres[i], public[i], force=True)
+    decryptref(reponames, whats)
 else:
     raise

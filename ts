@@ -12,3 +12,4 @@ $TIME ./fastcrypt d crypt tst/ refs/heads/master
 $TIME ./fastcrypt e ~/sysconf/ crypt refs/heads/master refs/tags/secrettag
 $TIME ./fastcrypt d crypt tst/ refs/heads/master refs/tags/secrettag master~2:refs/heads/master2
 git -C tst checkout master
+pylint fastcrypt
