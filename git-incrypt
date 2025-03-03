@@ -450,8 +450,8 @@ def pushcommand(line, git_dir):
     repo = pygit2.Repository(path)
     remote = repo.remotes['origin']
     key = getkey(repo)
-    refspecs = [f"+{ref}:{ref}" for ref in
-                [encryptrefname(r[1], key) for r in refs]]
+    refspecs = [f'+{ref[1]}:{ref[1]}' if ref[0] else f':{ref[1]}' for ref in
+                [[r[0], encryptrefname(r[1], key)] for r in refs]]
     sshdir = os.path.join(os.path.expanduser('~'), '.ssh')
     keypair = pygit2.Keypair('git', os.path.join(sshdir, 'id_rsa.pub'),
                              os.path.join(sshdir, 'id_rsa'), '')
