@@ -8,16 +8,20 @@ import os
 import sys
 import re
 import hashlib
+import base64
 import pygit2
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
 FORMAT = b'\x00\x00\x00\x00'
+settings = [1, True]
 
 
 def progressbar(progress, total, length=50):
     'print a progress bar'
+    if not settings[1]:
+        return
     if not total:
         sys.stderr.write('\r' + ' ' * (length + 7) + '\r')
         sys.stderr.flush()
@@ -26,6 +30,13 @@ def progressbar(progress, total, length=50):
     pbar = '█' * int(percent * length) + '-' * (length - int(percent * length))
     sys.stderr.write(f'\r|{pbar}| {percent:.0%}')
     sys.stderr.flush()
+
+
+def log(level, message):
+    'prints a log message'
+    if level <= settings[0]:
+        sys.stderr.write(f'{message}\n')
+        sys.stderr.flush()
 
 
 def cipher(key):
@@ -56,8 +67,7 @@ def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
 def cryptraw(clear, key, collector, repo, cryptcache):
     'encrypt a raw object'
     cryptid = repo.create_blob(encryptdata(
-        clear.id.raw + [b'?', b'c', b't', b'b', b'T'][clear.type] +
-        clear.read_raw(), key))
+        clear.id.raw + clear.type.to_bytes(1) + clear.read_raw(), key))
     collector.insert(str(len(collector)), cryptid, pygit2.enums.FileMode.BLOB)
     cryptcache[clear.id] = True
 
@@ -134,7 +144,13 @@ def register(obj, child, status, children):
 def createrefs(repo, refs, inits, cryptmap):
     'create all encrypted or decrypted references'
     for i, ref in enumerate(refs):
-        repo.create_reference(ref, cryptmap[inits[i].id], force=True)
+        if inits[i]:
+            repo.create_reference(ref, cryptmap[inits[i].id], force=True)
+        else:
+            try:
+                repo.references.delete(ref)
+            except KeyError:
+                pass
 
 
 def recursivefind(status, children):
@@ -188,14 +204,14 @@ def encryptrefname(ref, key):
     'encrypt a refname'
     sref = splitref(ref)
     rawname = sref[0].encode('utf-8')
-    return 'refs/heads/' + encryptdata(
-            hashlib.sha1(rawname).digest() + rawname, key).hex() + sref[1]
+    return 'refs/heads/' + base64.b64encode(encryptdata(
+            hashlib.sha1(rawname).digest() + rawname, key), b'+#').decode('utf-8') + sref[1]
 
 
 def decryptrefname(ref, key):
     'decrypt a refname'
     try:
-        data = decryptdata(bytes.fromhex(ref.rsplit('/', 1)[-1]), key)
+        data = decryptdata(base64.b64decode(ref.rsplit('/', 1)[-1], b'+#'), key)
         assert hashlib.sha1(data[20:]).digest() == data[0:20], \
             'corrupted reference name'
         return data[20:].decode('utf-8')
@@ -213,88 +229,74 @@ def encryptref(repolocs, refs):
     children = {}
 
     if not refs:
-        refs = list(map(lambda r: [r, r], filter(
-            lambda r: r[-5:] != '/HEAD', repos[0].references)))
-    inits = list(map(lambda r: repos[0].revparse_single(r[0]), refs))
+        refs = list(map(lambda r: [r, r],
+                        ['HEAD'] + list(repos[0].references)))
+    inits = list(map(lambda r: repos[0].revparse_single(r[0]) if r[0] != ''
+                     else None, refs))
     for init in inits:
-        register(init, None, status, children)
+        if init:
+            register(init, None, status, children)
     recursivefind(status, children)
     topologicalencryption(status, children, key, repos[1])
-    if len(status[0]) + len(status[1]) + len(status[2]) > 0:
-        sys.stderr.write(f'found: {status[0]}\n')
-        sys.stderr.write(f'pending: {status[1]}\n')
-        sys.stderr.write(f'ready: {status[2]}\n')
-        raise RuntimeError('Not all data got properly processed')
+    if len(status[1]):
+        raise RuntimeError(
+            f'Not all data got processed, {status[1]} still pending')
     writemap(status[3], key, repos[1])
     createrefs(repos[1], list(map(lambda r: encryptrefname(r[1], key),
                                   refs)), inits, status[3])
 
 
-def clihash(tpe, raw, targetname):
-    'call external git client for not implemented raw hasing'
-    env = os.environ.copy()
-    env.pop("GIT_DIR", None)
-    return subprocess.check_output(
-        ['git', '-C', targetname, 'hash-object', '--literally', '-t', tpe,
-         '-w', '--stdin'], input=raw[21:], env=env).decode('utf-8').strip()
-
-
-def decrypttree(tree, key, repo, repoloc):
+def decrypttree(tree, key, repo):
     'decrypt a tree representing a commit or tag'
     commit = None
     for obj in tree:
         raw = decryptdata(obj.read_raw(), key)
-        if raw[20] == b'b'[0]:
-            repo.create_blob(raw[21:])
-        elif raw[20] == b't'[0]:
-            clihash('tree', raw, repoloc)
-        elif raw[20] == b'c'[0]:
-            commit = clihash('commit', raw, repoloc)
-        elif raw[20] == b'T'[0]:
-            commit = clihash('tag', raw, repoloc)
-        else:
-            sys.stderr.write(f'{raw[20:21]}\n')
-            raise TypeError(f'Unexpected git object type {raw[20]}')
+        tmp = repo.odb.write(raw[20], raw[21:])
+        if raw[20] in (pygit2.enums.ObjectType.COMMIT,
+                       pygit2.enums.ObjectType.TAG):
+            commit = tmp
     return commit
 
 
-def decryptref(repolocs, refs):
+def recursivefinddec(status):
+    'recursively traverse and find all commits to decrypt'
+    while status[0]:
+        oid, obj = status[0].popitem()
+        for p in obj.parents:
+            if p.id not in status[1]:
+                status[0][p.id] = p
+        status[1][oid] = obj
+
+
+def randomdecryption(status, key, repo):
+    'encrypt all objects in topological order'
+    total = len(status[1])
+    while status[1]:
+        oid, obj = status[1].popitem()
+        status[2][oid] = status[3][oid] \
+            if oid in status[3] and status[3][oid] in repo \
+            else decrypttree(obj.tree, key, repo)
+        progressbar(len(status[2]), total)
+    progressbar(0, 0)
+
+
+def decryptref(repos, refs, key):
     'decrypt references'
-    repos = list(map(pygit2.Repository, repolocs))
+    # [ found, ready, processed, cryptmap ]
+    status = [{}, {}, {}, readrevmap(key, repos)]
 
-    found = {}
-    cryptmap = {}
-
-    key = getkey(repos[0])
-    if not refs:
-        refs = list(map(lambda r: [r, r], cryptreferences(repos[0], key)))
     inits = list(map(
         lambda r: repos[0].revparse_single(encryptrefname(r[0], key)), refs))
     for init in inits:
-        found[init.id] = init
-    while found:
-        oid, cryptdata = found.popitem()
-        commit = decrypttree(cryptdata.tree, key, repos[1], repolocs[1])
-        cryptmap[oid] = commit
-        obj = repos[1].get(commit)
-        if obj.type == pygit2.enums.ObjectType.COMMIT:
-            missing = False
-            for parent in obj.parent_ids:
-                if parent not in repos[1]:
-                    missing = True
-                    break
-            if missing:
-                for parent in cryptdata.parents:
-                    found[parent.id] = parent
-        elif obj.type == pygit2.enums.ObjectType.TAG:
-            if obj.target not in repos[1]:
-                found[cryptdata.parent_ids[0]] = cryptdata.parents[0]
-    createrefs(repos[1], list(map(lambda r: r[1], refs)), inits, cryptmap)
+        status[0][init.id] = init
+    recursivefinddec(status)
+    randomdecryption(status, key, repos[1])
+    createrefs(repos[1], list(map(lambda r: r[1], refs)), inits, status[2])
 
 
 def getkey(repo):
     'retrieve an existing key'
-    cryptedkey = repo.get(repo.revparse_single('refs/tags/key').id).read_raw()
+    cryptedkey = repo.revparse_single('refs/heads/key').tree["0"].read_raw()
     assert cryptedkey[0:4] == FORMAT, \
         f'Crypt format is {cryptedkey[0:4]}, expected {FORMAT}'
     return subprocess.check_output(['gpg', '-q', '-d'], input=cryptedkey[4:])
@@ -304,12 +306,25 @@ def readmap(key, repo):
     'read the mapping table'
     processed = {}
     try:
-        rawdata = decryptdata(repo.get(
-            repo.revparse_single('refs/heads/map').id).read_raw(), key)
+        rawdata = decryptdata(repo.revparse_single('refs/heads/map').tree["0"].read_raw(), key)
         for i in range(0, len(rawdata), 40):
             crypt = rawdata[i+20:i+40].hex()
             if crypt in repo:
                 processed[rawdata[i:i+20].hex()] = crypt
+    except KeyError:
+        pass
+    return processed
+
+
+def readrevmap(key, repos):
+    'read the mapping table'
+    processed = {}
+    try:
+        rawdata = decryptdata(repos[0].revparse_single('refs/heads/map').tree["0"].read_raw(), key)
+        for i in range(0, len(rawdata), 40):
+            clear = rawdata[i:i+20].hex()
+            if clear in repos[1]:
+                processed[rawdata[i+20:i+40].hex()] = clear
     except KeyError:
         pass
     return processed
@@ -321,7 +336,12 @@ def writemap(processed, key, repo):
     for a, b in processed.items():
         rawdata += bytes.fromhex(a) + bytes.fromhex(b)
     mapfile = repo.create_blob(encryptdata(rawdata, key))
-    repo.create_reference('refs/heads/map', mapfile, force=True)
+    collector = repo.TreeBuilder()
+    collector.insert('0', mapfile, pygit2.enums.FileMode.BLOB)
+    colid = collector.write()
+    commit = secretcommit(colid, [], repo, key)
+    repo.create_reference('refs/heads/map', commit, force=True)
+
 
 
 def cryptreferences(repo, key):
@@ -332,10 +352,13 @@ def cryptreferences(repo, key):
 
 def gitgryptref(ref):
     'calculate git crypt refname'
-    if not ref:
-        return None
-    s = str(ref).split('/', 1)
-    return s[0] + '/incrypt/12345/' + s[1]
+    return 'refs/incrypt/12345/' + ref if ref else None
+
+
+def talk(message):
+    'sends a response to git'
+    sys.stdout.write(f'{message}\n')
+    sys.stdout.flush()
 
 
 def listrefs(repolocs):
@@ -346,13 +369,17 @@ def listrefs(repolocs):
                     filter(lambda x: x is not None,
                            map(lambda r: decryptrefname(r, key),
                                repos[0].references))))
-    decryptref(repolocs, refs)
+    decryptref(repos, refs, key)
+    expected = list(map(lambda r: r[1], refs))
+    # talk(f'{repos[1].lookup_reference(gitgryptref(
+    #       "refs/heads/master")).target} HEAD')
     for r in repos[1].references:
         if r[0:19] == 'refs/incrypt/12345/':
-            sys.stdout.write(
-                f'{repos[1].lookup_reference(r).target} refs/{r[19:]}\n')
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+            if r in expected:
+                talk(f'{repos[1].lookup_reference(r).target} {r[19:]}')
+            else:
+                repos[1].references.delete(r)
+    talk('')
 
 
 def listcryptrefs(reponame):
@@ -360,7 +387,7 @@ def listcryptrefs(reponame):
     repo = pygit2.Repository(reponame)
     key = getkey(repo)
     for r in cryptreferences(repo, key):
-        print(r)
+        print(f'{r} ({encryptrefname(r, key)})')
 
 
 def initcrypt(reponame, keys, data=(
@@ -376,65 +403,91 @@ def initcrypt(reponame, keys, data=(
     cryptedkey = subprocess.check_output([
         'gpg', '-q', '-e'] + list(map(lambda k: '-r' + k, keys)), input=key)
     keyfile = repo.create_blob(FORMAT + cryptedkey)
-    repo.create_reference('refs/tags/key', keyfile, force=True)
+    collector = repo.TreeBuilder()
+    collector.insert('0', keyfile, pygit2.enums.FileMode.BLOB)
+    colid = collector.write()
+    commit = secretcommit(colid, [], repo, key)
+    repo.create_reference('refs/heads/key', commit, force=True)
     return key
+
+
+def fetchcommand(line):
+    'parse fetch batch'
+    while line:
+        command = line.split()
+        if command[0] == 'fetch':
+            # We did that already in list.
+            pass
+        else:
+            raise ValueError(f'Unexpected command in fetch batch: {line}')
+        line = sys.stdin.readline().strip()
+        log(2, f'INCRYPT:          {line}')
+    talk('')
+
+
+def pushcommand(line, git_dir):
+    'parse push batch'
+    refs = []
+    while line:
+        command = line.split()
+        if command[0] == 'push':
+            src, dst = command[1].split(':')
+            if len(src) and src[0] == '+':
+                src = src[1:]
+                # force
+            log(3, f'Pushing {src} to {dst}...')
+            refs.append([src, dst])
+        else:
+            raise ValueError(f'Unexpected command in push batch: {line}')
+        line = sys.stdin.readline().strip()
+        log(2, f'INCRYPT:          {line}')
+    encryptref([git_dir, sys.argv[2]], refs)
+    for r in refs:
+        talk(f'ok {r[1]}')
+    talk('')
 
 
 def remotehelperloop():
     'communication loop'
-    git_dir = os.environ.get("GIT_DIR", "UNSET")
-    sys.stderr.write(f"INCRYPT: arguments: {sys.argv}\n")
-    sys.stderr.write(f"INCRYPT: GIT_DIR: {git_dir}\n")
-    sys.stderr.flush()
+    git_dir = os.environ.get('GIT_DIR', 'UNSET')
+    log(2, f'INCRYPT: arguments: {sys.argv}')
+    log(2, f'INCRYPT: GIT_DIR: {git_dir}')
     while True:
         line = sys.stdin.readline().strip()
         if not line:
             break
 
         command = line.split()
-        sys.stderr.write(f"INCRYPT: invoked: {line}\n")
-        sys.stderr.flush()
-        if command[0] == "capabilities":
-            sys.stdout.write("fetch\n")
-            sys.stdout.write("push\n")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        elif command[0] == "list":
+        log(2, f'INCRYPT: invoked: {line}')
+        if command[0] == 'capabilities':
+            talk('fetch\npush\noption\n')
+        elif command[0] == 'list':
             listrefs([sys.argv[2], git_dir])
-        elif command[0] == "push":
-            refs = []
-            while line:
-                command = line.split()
-                sys.stderr.write(f"INCRYPT:          {line}\n")
-                sys.stderr.flush()
-                if command[0] == "push":
-                    src, dst = command[1].split(':')
-                    if src[0] == '+':
-                        src = src[1:]
-                        # force
-                    sys.stderr.write(f"Pushing {src} to {dst}...\n")
-                    sys.stderr.flush()
-                    refs.append([src, dst])
-                else:
-                    sys.stderr.write(f"Unknown command: {line}\n")
-                    sys.stderr.flush()
-                line = sys.stdin.readline().strip()
-            encryptref([git_dir, sys.argv[2]], refs)
-            for r in refs:
-                sys.stdout.write(f"ok {r[1]}\n")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+        elif command[0] == 'fetch':
+            fetchcommand(line)
+        elif command[0] == 'push':
+            pushcommand(line, git_dir)
+        elif command[0] == 'option':
+            if command[1] == 'progress':
+                settings[1] = command[2] == 'true'
+                talk('ok')
+            elif command[1] == 'verbosity':
+                settings[0] = int(command[2])
+                talk('ok')
+            elif command[1] == 'followtags':
+                talk('ok')
+            else:
+                talk('unsupported')
         else:
-            sys.stderr.write(f"Unknown command: {line}\n")
-            sys.stderr.flush()
+            log(1, f'Unknown command: {line}')
 
 
 cmd = sys.argv[0].rsplit('/', 1)[-1]
 
-if cmd == "git-remote-incrypt":
+if cmd == 'git-remote-incrypt':
     remotehelperloop()
     sys.exit(0)
-if cmd == "git-incrypt":
+if cmd == 'git-incrypt':
     sys.exit(0)
 
 operation = sys.argv[1]
@@ -445,11 +498,7 @@ if len(sys.argv) > 3:
         elements = what.split(':', 1)
         whats.append((elements[0], elements[len(elements)-1]))
 
-if operation[0:1] == 'e':
-    encryptref(reponames, whats)
-elif operation[0:1] == 'd':
-    decryptref(reponames, whats)
-elif operation[0:1] == 'l':
+if operation[0:1] == 'l':
     listcryptrefs(reponames[0])
 elif operation[0:1] == 'i':
     if whats:
