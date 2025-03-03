@@ -431,6 +431,7 @@ def fetchcommand(line):
 
 def pushcommand(line, git_dir):
     'parse push batch'
+    path = proxydir(sys.argv[2], git_dir)
     refs = []
     while line:
         command = line.split()
@@ -445,10 +446,51 @@ def pushcommand(line, git_dir):
             raise ValueError(f'Unexpected command in push batch: {line}')
         line = sys.stdin.readline().strip()
         log(2, f'INCRYPT:          {line}')
-    encryptref([git_dir, sys.argv[2]], refs)
+    encryptref([git_dir, path], refs)
+    repo = pygit2.Repository(path)
+    remote = repo.remotes['origin']
+    key = getkey(repo)
+    refspecs = [f"+{ref}:{ref}" for ref in
+                [encryptrefname(r[1], key) for r in refs]]
+    sshdir = os.path.join(os.path.expanduser('~'), '.ssh')
+    keypair = pygit2.Keypair('git', os.path.join(sshdir, 'id_rsa.pub'),
+                             os.path.join(sshdir, 'id_rsa'), '')
+    callbacks = pygit2.RemoteCallbacks(credentials=keypair)
+    remote.push(refspecs, callbacks=callbacks)
     for r in refs:
         talk(f'ok {r[1]}')
     talk('')
+
+
+def init_remote(repo, name, url):
+    'initialize remote for mirror setup'
+    remote = repo.remotes.create(name, url, "+refs/*:refs/*")
+    mirror_var = f"remote.{name.decode()}.mirror"
+    repo.config[mirror_var] = True
+    return remote
+
+
+def proxydir(url, host):
+    'calculate proxy directory'
+    urlhash = hashlib.sha1(url.encode('utf-8')).hexdigest()
+    return os.path.join(host, 'incrypt', urlhash)
+
+
+def cloneandfetch(url, host):
+    'clone and fetch a proxy repo from the remote'
+    path = proxydir(url, host)
+    sshdir = os.path.join(os.path.expanduser('~'), '.ssh')
+    keypair = pygit2.Keypair('git', os.path.join(sshdir, 'id_rsa.pub'),
+                             os.path.join(sshdir, 'id_rsa'), '')
+    callbacks = pygit2.RemoteCallbacks(credentials=keypair)
+    if not os.path.isdir(path):
+        repo = pygit2.clone_repository(url, path, bare=True,
+                                       remote=init_remote, callbacks=callbacks)
+    else:
+        repo = pygit2.Repository(path)
+        remote = repo.remotes['origin']
+        remote.fetch(callbacks=callbacks)
+    return path
 
 
 def remotehelperloop():
@@ -466,7 +508,8 @@ def remotehelperloop():
         if command[0] == 'capabilities':
             talk('fetch\npush\noption\n')
         elif command[0] == 'list':
-            listrefs([sys.argv[2], git_dir])
+            proxy = cloneandfetch(sys.argv[2], git_dir)
+            listrefs([proxy, git_dir])
         elif command[0] == 'fetch':
             fetchcommand(line)
         elif command[0] == 'push':

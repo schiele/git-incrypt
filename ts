@@ -12,6 +12,7 @@ REPO=incrypt::$PWD/crypt
 	"$(git config user.email)" \
 	1740000000 2 \
 	"Go away, there is nothing to see here!"
+rm -rf ~/sysconf/.git/incrypt/
 git -C ~/sysconf/ push $REPO master~2:refs/heads/master
 git clone $REPO tst
 git -C ~/sysconf/ push $REPO secrettag
