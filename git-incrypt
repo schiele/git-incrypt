@@ -328,7 +328,7 @@ def readmap(key, repo):
     try:
         rawdata = decryptdata(repo.revparse_single(
             'refs/heads/map').tree["0"].read_raw(), key)
-        for i in range(0, len(rawdata), 40):
+        for i in range(20, len(rawdata), 40):
             crypt = rawdata[i+20:i+40].hex()
             if crypt in repo:
                 processed[rawdata[i:i+20].hex()] = crypt
@@ -343,7 +343,7 @@ def readrevmap(key, repos):
     try:
         rawdata = decryptdata(repos[0].revparse_single(
             'refs/heads/map').tree["0"].read_raw(), key)
-        for i in range(0, len(rawdata), 40):
+        for i in range(20, len(rawdata), 40):
             clear = rawdata[i:i+20].hex()
             if clear in repos[1]:
                 processed[rawdata[i+20:i+40].hex()] = clear
@@ -357,7 +357,8 @@ def writemap(processed, key, repo):
     rawdata = b''
     for a, b in processed.items():
         rawdata += bytes.fromhex(a) + bytes.fromhex(b)
-    mapfile = repo.create_blob(encryptdata(rawdata, key))
+    mapfile = repo.create_blob(encryptdata(hashlib.sha1(rawdata).digest() +
+                                           rawdata, key))
     collector = repo.TreeBuilder()
     collector.insert('0', mapfile, pygit2.enums.FileMode.BLOB)
     colid = collector.write()
@@ -467,8 +468,9 @@ def pushcommand(line, git_dir):
     repo = pygit2.Repository(path)
     remote = repo.remotes['origin']
     key = getkey(repo)
-    refspecs = [f'+{ref[1]}:{ref[1]}' if ref[0] else f':{ref[1]}' for ref in
-                [[r[0], encryptrefname(r[1], key)] for r in refs]]
+    refspecs = ['+refs/heads/map:refs/heads/map'] + [
+            f'+{ref[1]}:{ref[1]}' if ref[0] else f':{ref[1]}' for ref in
+            [[r[0], encryptrefname(r[1], key)] for r in refs]]
     sshdir = os.path.join(os.path.expanduser('~'), '.ssh')
     keypair = pygit2.Keypair('git', os.path.join(sshdir, 'id_rsa.pub'),
                              os.path.join(sshdir, 'id_rsa'), '')
