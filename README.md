@@ -35,6 +35,13 @@ the amount of commits in each branch and their structural relationships to
 each other. The attacker could not see who created them or when they were
 created.
 
+Since we encrypt each object separately we also pay a price by a space
+increase of the overall repository of a bit less than a ten-fold increase.
+This is caused by the fact that the delta algorithm in git can no longer
+detect similarities between the individual encrypted objects. Since in a
+typical workflow changes to the repository are of small increments though the
+speed increase is likely worth it.
+
 The way we encrypt individual objects might reveal data that an attacker could
 use to undermine the encryption, though I tried to mitigate the risks wherever
 I saw one. A more detailed analysis and discussion should follow in the future
