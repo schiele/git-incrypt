@@ -84,23 +84,20 @@ def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
 
 def cryptraw(clear, key, collector, repo, cryptcache):
     'encrypt a raw object'
-    cryptid = repo.create_blob(encryptdata(
-        clear.id.raw + clear.type.to_bytes(1) + clear.read_raw(), key))
+    cryptid = cryptcache[clear.id] if clear.id in cryptcache else \
+        repo.create_blob(encryptdata(
+            clear.id.raw + clear.type.to_bytes(1) + clear.read_raw(), key))
     collector.insert(str(len(collector)), cryptid, pygit2.enums.FileMode.BLOB)
-    cryptcache[clear.id] = True
+    cryptcache[clear.id] = cryptid
 
 
 def encryptblob(blob, key, collector, repo, cryptcache):
     'encrypt a blob'
-    if blob.id in cryptcache:
-        return
     cryptraw(blob, key, collector, repo, cryptcache)
 
 
 def encrypttree(tree, key, collector, repo, cryptcache):
     'encrypt a tree'
-    if tree.id in cryptcache:
-        return
     for obj in tree:
         if obj.type == pygit2.enums.ObjectType.TREE:
             encrypttree(obj, key, collector, repo, cryptcache)
