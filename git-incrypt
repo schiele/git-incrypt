@@ -27,6 +27,7 @@ import sys
 import re
 import hashlib
 import base64
+import argparse
 import pygit2
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
@@ -106,42 +107,13 @@ def getkey(repo):
     return subprocess.check_output(['gpg', '-q', '-d'], input=cryptedkey[4:])
 
 
-def listcryptrefs(reponame):
-    'list all enctypted references'
-    repo = pygit2.Repository(reponame)
-    key = getkey(repo)
-    for r in filter(lambda x: x is not None,
-                    [decryptrefname(r, key) for r in repo.references]):
-        print(f'{r} ({encryptrefname(r, key)})')
-
-
-def initcrypt(reponame, keys, data=(
-        'nobody', 'nobody@nowhere.org', 0, 0, 'secret')):
-    'init crypto repository'
-    repo = pygit2.init_repository(reponame, bare=True)
-    key = os.urandom(48) + \
-        data[0].encode('utf-8') + b'\x00' + \
-        data[1].encode('utf-8') + b'\x00' + \
-        str(data[2]).encode('utf-8') + b'\x00' + \
-        str(data[3]).encode('utf-8') + b'\x00' + \
-        data[4].encode('utf-8')
-    cryptedkey = subprocess.check_output([
-        'gpg', '-q', '-e'] + ['-r' + k for k in keys], input=key)
-    keyfile = repo.create_blob(FORMAT + cryptedkey)
-    collector = repo.TreeBuilder()
-    collector.insert('0', keyfile, pygit2.enums.FileMode.BLOB)
-    colid = collector.write()
-    commit = secretcommit(colid, [], repo, key)
-    repo.create_reference('refs/heads/key', commit, force=True)
-    return key
-
-
 class CryptRepo:
     # pylint: disable=too-many-instance-attributes
     'encrypted repository'
     verbosityflags = ('-q', '-q', '-v', '-vv', '-vvv')
 
     def __init__(self, clearname, remotename, url):
+        assert clearname, 'This does not work yet outside a git repository'
         self.verbosity = 1
         self.showprogress = True
         self.remotename = remotename
@@ -448,22 +420,61 @@ def remotehelperloop():
             raise RuntimeError(f'Unknown command: {line}')
 
 
+def init_command(args):
+    'init incrypt repository'
+    repo = pygit2.init_repository('.', bare=True)
+    key = os.urandom(48) + \
+        args.name.encode('utf-8') + b'\x00' + \
+        args.email.encode('utf-8') + b'\x00' + \
+        str(args.time).encode('utf-8') + b'\x00' + \
+        str(args.offset).encode('utf-8') + b'\x00' + \
+        args.message.encode('utf-8')
+    cryptedkey = subprocess.check_output([
+        'gpg', '-q', '-e'] + ['-r' + k for k in args.keys], input=key)
+    keyfile = repo.create_blob(FORMAT + cryptedkey)
+    collector = repo.TreeBuilder()
+    collector.insert('0', keyfile, pygit2.enums.FileMode.BLOB)
+    colid = collector.write()
+    commit = secretcommit(colid, [], repo, key)
+    repo.create_reference('refs/heads/key', commit, force=True)
+    return key
+
+
+def tool():
+    'git incrypt tool implementation'
+    parser = argparse.ArgumentParser(
+        description='git inccrypt: '
+        'A git remote helper to encrypt git repositories incrementally.')
+    subparsers = parser.add_subparsers(
+        title='subcommands', dest='command', help='Available commands')
+    subparsers.required = True
+    init_parser = subparsers.add_parser(
+        'init', help='Initialize the project')
+    init_parser.add_argument(
+        '-n', '--name', type=str, default='nobody',
+        help='Name of the author of the encrypted commits')
+    init_parser.add_argument(
+        '-e', '--email', type=str, default='nobody@nowhere.org',
+        help='Email of the author of the encrypted commits')
+    init_parser.add_argument(
+        '-t', '--time', type=int, default=0,
+        help='Seconds since the epoch when the encypted commits are authored')
+    init_parser.add_argument(
+        '-o', '--offset', type=int, default=0, help='Offset to UTC in hours '
+        'for the time when the encypted commits are authored')
+    init_parser.add_argument(
+        '-m', '--message', type=str, default='',
+        help='Message in encrypted commits')
+    init_parser.add_argument(
+        'keys', nargs='+', help='GPG keys used to encrypt the data')
+    init_parser.set_defaults(func=init_command)
+    args = parser.parse_args()
+    args.func(args)
+
+
 cmd = sys.argv[0].rsplit('/', 1)[-1]
 
 if cmd == 'git-remote-incrypt':
     remotehelperloop()
-    sys.exit(0)
-if cmd == 'git-incrypt':
-    sys.exit(0)
-
-operation = sys.argv[1]
-
-if operation[0:1] == 'l':
-    listcryptrefs(sys.argv[2])
-elif operation[0:1] == 'i':
-    if len(sys.argv) > 3:
-        initcrypt(sys.argv[2], sys.argv[3].split(','), data=sys.argv[4:])
-    else:
-        initcrypt(sys.argv[2], sys.argv[3].split(','))
-else:
-    raise ValueError(f'Unknown operation {operation}')
+elif cmd == 'git-incrypt':
+    tool()
