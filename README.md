@@ -108,9 +108,9 @@ With this approach no filters need to get applied as with
 https://www.agwa.name/projects/git-crypt/ but all action happens when fetching
 or pushing data to the remote.
 
-Another project I have seen before (but currently couldn't find anymore) did
-operate as a remote helper, similar to this one but they did compress the
-complete pack files, making incremental changes expensive since this
+There is https://github.com/spwhitton/git-remote-gcrypt that operate as a
+remote helper, similar to this one but they compress the complete pack files,
+making incremental changes on arbitrary git URLs expensive since this
 potentially requires re-transmitting large pack files.
 
 Our approach has advantages and disadvantages compared to those other
@@ -125,22 +125,30 @@ location, like a local server and duplicate the same on an encrypted remote in
 public space to exchange the code with other trusted parties.
 
 Compared with the second approach we can perform incremental changes to the
-git repository in a more efficient way since if there is only a small change
-on the unencrypted repository, this causes only a small change to the
-encrypted repository, while the other approach might require large transfers
-if the pack files changed. On the other side our approach does reveal more
-information about the repository structure in the sence that a potential
-attacker can count the amount of branches or tags that do exist and can count
-the amount of commits in each branch and their structural relationships to
-each other. The attacker could not see who created them or when they were
-created.
+git repository in a more efficient way. If there is only a small change on the
+unencrypted repository, this causes only a small change to the encrypted
+repository, while the other approach might require large transfers of the pack
+files changed. On the other side our approach does reveal more information
+about the repository structure in the sense that a potential attacker can
+count the amount of branches or tags that do exist and can count the amount of
+commits in each branch and their structural relationships to each other. An
+attacker could not see who created them or when they were created.
 
 Since we encrypt each object separately we also pay a price by a space
 increase of the overall repository of a bit less than a ten-fold increase.
 This is caused by the fact that the delta algorithm in git can no longer
 detect similarities between the individual encrypted objects. Since in a
 typical workflow changes to the repository are of small increments though the
-speed increase is likely worth it.
+speed increase is likely worth it. Also the initial encryption of an already
+very large repository can take quite some time. Encrypting the complete source
+repository of git takes about 45 minutes on my current laptop. By setting the
+variable `selfcontained` to `False` in the code this time goes down to only 10
+minutes. If you do so though the repository will no longer work with shallow
+clones in the future when we implement this. Therefore I left the
+self-contained version as a default since the performance penalty seems only
+relevant for the expensive initial encryption. --- And after all most users
+will have significantly smaller repositories compared to the repository of git
+itself.
 
 The way we encrypt individual objects might reveal data that an attacker could
 use to undermine the encryption, though I tried to mitigate the risks wherever
