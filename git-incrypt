@@ -137,31 +137,37 @@ def initcrypt(reponame, keys, data=(
 
 
 class CryptRepo:
+    # pylint: disable=too-many-instance-attributes
     'encrypted repository'
-    def __init__(self, clearname, url):
+    verbosityflags = ('-q', '-q', '-v', '-vv', '-vvv')
+
+    def __init__(self, clearname, remotename, url):
+        self.verbosity = 1
+        self.showprogress = True
+        self.remotename = remotename
         self.clearrepo = pygit2.Repository(clearname)
         hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
         self.name = os.path.join(clearname, 'incrypt', hashstr)
         self.refprefix = f'refs/incrypt/{hashstr}/'
         if not os.path.isdir(self.name):
-            subprocess.run(['git', 'clone', '--mirror', url, self.name],
+            subprocess.run(['git', 'clone',
+                            CryptRepo.verbosityflags[self.verbosity],
+                            '--mirror', url, self.name],
                            check=True, stdout=sys.stderr)
         self.repo = pygit2.Repository(self.name)
         self.key = getkey(self.repo)
-        self.showprogress = True
 
-    def progressbar(self, progress, total, length=50):
+    def progressbar(self, what, progress, total):
         'print a progress bar'
         if not self.showprogress:
             return
-        if not total:
-            sys.stderr.write('\r' + ' ' * (length + 7) + '\r')
+        if not what:
+            sys.stderr.write(', done.\n')
             sys.stderr.flush()
             return
         percent = progress / total
-        pbar = '█' * int(percent * length) + \
-            '-' * (length - int(percent * length))
-        sys.stderr.write(f'\r|{pbar}| {percent:.0%}')
+        sys.stderr.write(
+            f'\r{self.remotename}: {what}: {percent:.0%} ({progress}/{total})')
         sys.stderr.flush()
 
     def readmap(self, reverse=False):
@@ -209,10 +215,11 @@ class CryptRepo:
                 status[2][oid] = status[3][oid] \
                     if oid in status[3] and status[3][oid] in self.clearrepo \
                     else decrypttree(obj.tree)
-                self.progressbar(len(status[2]), total)
-            self.progressbar(0, 0)
+                self.progressbar('Decrypting objects', len(status[2]), total)
+            self.progressbar(None, 0, 0)
 
-        subprocess.run(['git', 'fetch'],
+        subprocess.run(['git', 'fetch',
+                        CryptRepo.verbosityflags[self.verbosity]],
                        cwd=self.name, check=True, stdout=sys.stderr)
         # [ dec(crypt) , prefdec(crypt), crypt ]
         refs = [[r[0], self.refprefix + r[0], self.repo.revparse_single(r[1])]
@@ -350,8 +357,9 @@ class CryptRepo:
                         continue
                     if iscomplete(c):
                         status[2][c.id] = status[1].pop(c.id)
-                self.progressbar(len(status[3]) - totals[1], totals[0])
-            self.progressbar(0, 0)
+                self.progressbar('Encrypting objects',
+                                 len(status[3]) - totals[1], totals[0])
+            self.progressbar(None, 0, 0)
 
         # [ found, pending, ready, processed ]
         status = [{}, {}, {}, self.readmap()]
@@ -376,7 +384,8 @@ class CryptRepo:
                     self.repo.references.delete(r[2])
                 except KeyError:
                     pass
-        subprocess.run(['git', 'push'],
+        subprocess.run(['git', 'push',
+                        CryptRepo.verbosityflags[self.verbosity]],
                        cwd=self.name, check=True, stdout=sys.stderr)
 
 
@@ -407,8 +416,8 @@ def remotehelperloop():
         crypt.push(refs)
         sys.stdout.write(f"{''.join([f'ok {r[1]}\n' for r in refs])}\n")
 
-    # verbosity = 1
-    crypt = CryptRepo(os.environ.pop('GIT_DIR', None), sys.argv[2])
+    crypt = CryptRepo(os.environ.pop('GIT_DIR', None),
+                      sys.argv[1], sys.argv[2])
     while True:
         sys.stdout.flush()
         line = sys.stdin.readline().strip()
@@ -428,8 +437,7 @@ def remotehelperloop():
             if command[1] == 'progress':
                 crypt.showprogress = command[2] == 'true'
             elif command[1] == 'verbosity':
-                # verbosity = int(command[2])
-                pass
+                crypt.verbosity = int(command[2])
             elif command[1] == 'followtags':
                 pass
             else:
