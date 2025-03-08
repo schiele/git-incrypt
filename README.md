@@ -5,9 +5,11 @@ repositories on unsecure remote locations.
 
 ## Experimental Disclaimer Warning
 
-This is still a bit experimental. So use at your own risk and expect some
-weird errors. Because of this state the installation is also a bit more nerdy
-than what you might expect.
+This is still experimental. Encryption format is still not stable, which might
+require you to re-encrypt your data if you update to a future version.
+
+So use at your own risk and expect some weird errors. Because of this state
+the installation is also a bit more nerdy than what you might expect.
 
 ## Issues and Contributions
 
