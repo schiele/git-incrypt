@@ -124,8 +124,10 @@ class CryptRepo:
         if not os.path.isdir(self.name):
             subprocess.run(['git', 'clone',
                             CryptRepo.verbosityflags[self.verbosity],
-                            '--mirror', url, self.name],
+                            '-o', 'incrypt', '--mirror', url, self.name],
                            check=True, stdout=sys.stderr)
+            subprocess.run(['git', 'config', 'unset', 'remote.incrypt.mirror'],
+                           cwd=self.name, check=True, stdout=sys.stderr)
         self.repo = pygit2.Repository(self.name)
         self.key = getkey(self.repo)
 
@@ -219,6 +221,7 @@ class CryptRepo:
 
     def push(self, refs):
         # pylint: disable=too-many-statements
+        # pylint: disable=too-many-locals
         'push refs'
         def writemap():
             'write the mapping table'
@@ -336,29 +339,42 @@ class CryptRepo:
         # [ found, pending, ready, processed ]
         status = [{}, {}, {}, self.readmap()]
         children = {}
-        xrefs = [[r[0], r[1], encryptrefname(r[1], self.key),
+        xrefs = [[r[0], r[1], r[3],
+                  f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
                   self.clearrepo.revparse_single(r[0]) if r[0] else None]
-                 for r in refs]
+                 for r in [[r[0], r[1], r[2], encryptrefname(r[1], self.key)]
+                           for r in refs]]
         for init in xrefs:
-            if init[3]:
-                register(init[3], None)
+            if init[4]:
+                register(init[4], None)
         recursivefind()
         topologicalencryption()
         assert len(status[1]) == 0, \
             f'Not all data got processed, {status[1]} still pending'
         writemap()
         for r in xrefs:
-            if r[3]:
-                self.repo.create_reference(r[2], status[3][r[3].id],
+            if r[4]:
+                self.repo.create_reference(r[2], status[3][r[4].id],
                                            force=True)
             else:
                 try:
                     self.repo.references.delete(r[2])
                 except KeyError:
                     pass
-        subprocess.run(['git', 'push',
-                        CryptRepo.verbosityflags[self.verbosity]],
-                       cwd=self.name, check=True, stdout=sys.stderr)
+        result = subprocess.run(
+            ['git', 'push'] +
+            ([CryptRepo.verbosityflags[self.verbosity]] if self.verbosity > 1
+             else []) +
+            ['--porcelain', 'incrypt', '+refs/heads/map:refs/heads/map'] +
+            [r[3] for r in xrefs],
+            cwd=self.name, check=False, text=True, stdout=subprocess.PIPE)
+        resdict = {}
+        for line in result.stdout.split('\n'):
+            e = line.split('\t', 2)
+            if len(e) == 3:
+                resdict[e[1].split(':', 1)[1]] = \
+                    e[2].split('(', 1)[1][0:-1] if e[0] == '!' else None
+        return {r[1]: resdict[r[2]] for r in xrefs}
 
 
 def remotehelperloop():
@@ -380,13 +396,15 @@ def remotehelperloop():
             assert command[0] == 'push', \
                 f'Unexpected command in push batch: {line}'
             src, dst = command[1].split(':')
-            if len(src) and src[0] == '+':
+            force = len(src) and src[0] == '+'
+            if force:
                 src = src[1:]
-                # force
-            refs.append([src, dst])
+            refs.append([src, dst, force])
             line = sys.stdin.readline().strip()
-        crypt.push(refs)
-        sys.stdout.write(f"{''.join([f'ok {r[1]}\n' for r in refs])}\n")
+        results = crypt.push(refs)
+        sys.stdout.write(f"{
+            ''.join([(f'error {r} {e}\n' if e else f'ok {r}\n')
+                     for r, e in results.items()])}\n")
 
     crypt = CryptRepo(os.environ.pop('GIT_DIR', None),
                       sys.argv[1], sys.argv[2])
