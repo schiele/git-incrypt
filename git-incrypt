@@ -114,8 +114,9 @@ class CryptRepo:
 
     def __init__(self, clearname, remotename, url):
         assert clearname, 'This does not work yet outside a git repository'
-        self.verbosity = 1
+        self.atomic = True
         self.showprogress = True
+        self.verbosity = 1
         self.remotename = remotename
         self.clearrepo = pygit2.Repository(clearname)
         hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
@@ -124,21 +125,26 @@ class CryptRepo:
         if not os.path.isdir(self.name):
             subprocess.run(['git', 'clone',
                             CryptRepo.verbosityflags[self.verbosity],
-                            '-o', 'incrypt', '--mirror', url, self.name],
+                            '-o', 'incrypt', '-c', 'fetch.prune=true',
+                            '--mirror', url, self.name],
                            check=True, stdout=sys.stderr)
             subprocess.run(['git', 'config', 'unset', 'remote.incrypt.mirror'],
                            cwd=self.name, check=True, stdout=sys.stderr)
         self.repo = pygit2.Repository(self.name)
         self.key = getkey(self.repo)
+        self.progressactive = False
 
     def progressbar(self, what, progress, total):
         'print a progress bar'
         if not self.showprogress:
             return
         if not what:
-            sys.stderr.write(', done.\n')
-            sys.stderr.flush()
+            if self.progressactive:
+                sys.stderr.write(', done.\n')
+                sys.stderr.flush()
+            self.progressactive = False
             return
+        self.progressactive = True
         percent = progress / total
         sys.stderr.write(
             f'\r{self.remotename}: {what}: {percent:.0%} ({progress}/{total})')
@@ -365,9 +371,12 @@ class CryptRepo:
             ['git', 'push'] +
             ([CryptRepo.verbosityflags[self.verbosity]] if self.verbosity > 1
              else []) +
-            ['--porcelain', 'incrypt', '+refs/heads/map:refs/heads/map'] +
+            ['--porcelain'] +
+            (['--atomic'] if self.atomic else []) +
+            ['incrypt', '+refs/heads/map:refs/heads/map'] +
             [r[3] for r in xrefs],
-            cwd=self.name, check=False, text=True, stdout=subprocess.PIPE)
+            cwd=self.name, check=False, text=True, stdout=subprocess.PIPE,
+            stderr=sys.stderr if self.verbosity > 1 else subprocess.DEVNULL)
         resdict = {}
         for line in result.stdout.split('\n'):
             e = line.split('\t', 2)
@@ -378,6 +387,7 @@ class CryptRepo:
 
 
 def remotehelperloop():
+    # pylint: disable=too-many-branches
     'communication loop'
     def fetchcommand(line):
         'parse fetch batch'
@@ -424,7 +434,9 @@ def remotehelperloop():
         elif command[0] == 'push':
             pushcommand(line)
         elif command[0] == 'option':
-            if command[1] == 'progress':
+            if command[1] == 'atomic':
+                crypt.atomic = command[2] == 'true'
+            elif command[1] == 'progress':
                 crypt.showprogress = command[2] == 'true'
             elif command[1] == 'verbosity':
                 crypt.verbosity = int(command[2])
