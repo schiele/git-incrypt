@@ -33,8 +33,6 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
-FORMAT = b'\x00\x00\x00\x00'
-
 
 def cipher(key):
     'return cipher to be used'
@@ -61,13 +59,13 @@ def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
     return u.update(d.update(ciphertext) + d.finalize()) + u.finalize()
 
 
-def secretcommit(tree, parents, repo, key):
+def secretcommit(tree, parents, repo, template):
     'create secret commit wrapper'
-    data = key[48:].decode('utf-8').split('\x00', 5)
-    who = pygit2.repository.Signature(data[0], data[1],
-                                      time=int(data[2]), offset=int(data[3]))
-    return str(repo.create_commit(None, who, who,
-                                  data[4], tree, parents))
+    raw = b'tree ' + str(tree).encode('utf-8') + b'\n'
+    for parent in parents:
+        raw += b'parent ' + str(parent).encode('utf-8') + b'\n'
+    raw += template
+    return str(repo.odb.write(pygit2.enums.ObjectType.COMMIT, raw))
 
 
 def encryptrefname(ref, key):
@@ -99,14 +97,6 @@ def decryptrefname(ref, key):
         return None
 
 
-def getkey(repo):
-    'retrieve an existing key'
-    cryptedkey = repo.revparse_single('refs/heads/key').tree["0"].read_raw()
-    assert cryptedkey[0:4] == FORMAT, \
-        f'Crypt format is {cryptedkey[0:4]}, expected {FORMAT}'
-    return subprocess.check_output(['gpg', '-q', '-d'], input=cryptedkey[4:])
-
-
 class CryptRepo:
     # pylint: disable=too-many-instance-attributes
     'encrypted repository'
@@ -131,7 +121,7 @@ class CryptRepo:
             subprocess.run(['git', 'config', 'unset', 'remote.incrypt.mirror'],
                            cwd=self.name, check=True, stdout=sys.stderr)
         self.repo = pygit2.Repository(self.name)
-        self.key = getkey(self.repo)
+        self.meta = MetaData(self.repo).read()
         self.progressactive = False
 
     def progressbar(self, what, progress, total):
@@ -150,21 +140,6 @@ class CryptRepo:
             f'\r{self.remotename}: {what}: {percent:.0%} ({progress}/{total})')
         sys.stderr.flush()
 
-    def readmap(self, reverse=False):
-        'read the mapping table'
-        o = 20 if reverse else 0
-        processed = {}
-        try:
-            rawdata = decryptdata(self.repo.revparse_single(
-                'refs/heads/map').tree["0"].read_raw(), self.key)
-            for i in range(20, len(rawdata), 40):
-                target = rawdata[i+20-o:i+40-o].hex()
-                if target in self.clearrepo if reverse else self.repo:
-                    processed[rawdata[i+o:i+20+o].hex()] = target
-        except KeyError:
-            pass
-        return processed
-
     def getrefs(self):
         'list all cleartext references'
         def recursivefinddec():
@@ -182,7 +157,7 @@ class CryptRepo:
                 'decrypt a tree representing a commit or tag'
                 commit = None
                 for obj in tree:
-                    raw = decryptdata(obj.read_raw(), self.key)
+                    raw = decryptdata(obj.read_raw(), self.meta.key)
                     tmp = self.clearrepo.odb.write(raw[20], raw[21:])
                     if raw[20] in (pygit2.enums.ObjectType.COMMIT,
                                    pygit2.enums.ObjectType.TAG):
@@ -203,10 +178,10 @@ class CryptRepo:
                        cwd=self.name, check=True, stdout=sys.stderr)
         # [ dec(crypt) , prefdec(crypt), crypt ]
         refs = [[r[0], self.refprefix + r[0], self.repo.revparse_single(r[1])]
-                for r in [[decryptrefname(r, self.key), r] for r in
+                for r in [[decryptrefname(r, self.meta.key), r] for r in
                           filter(lambda r: len(r) > 14, self.repo.references)]]
         # [ found, ready, processed, cryptmap ]
-        status = [{}, {}, {}, self.readmap(reverse=True)]
+        status = [{}, {}, {}, self.meta.readmap(reverse=self.clearrepo)]
         for r in refs:
             status[0][r[2].id] = r[2]
         recursivefinddec()
@@ -229,19 +204,6 @@ class CryptRepo:
         # pylint: disable=too-many-statements
         # pylint: disable=too-many-locals
         'push refs'
-        def writemap():
-            'write the mapping table'
-            rawdata = b''
-            for a, b in status[3].items():
-                rawdata += bytes.fromhex(a) + bytes.fromhex(b)
-            mapfile = self.repo.create_blob(encryptdata(
-                hashlib.sha1(rawdata).digest() + rawdata, self.key))
-            collector = self.repo.TreeBuilder()
-            collector.insert('0', mapfile, pygit2.enums.FileMode.BLOB)
-            colid = collector.write()
-            commit = secretcommit(colid, [], self.repo, self.key)
-            self.repo.create_reference('refs/heads/map', commit, force=True)
-
         def iscomplete(obj):
             'check if processing is complete'
             if obj.type == pygit2.enums.ObjectType.COMMIT:
@@ -287,7 +249,7 @@ class CryptRepo:
                 cryptid = cryptcache[clear.id] if clear.id in cryptcache else \
                     self.repo.create_blob(encryptdata(
                         clear.id.raw + clear.type.to_bytes(1) +
-                        clear.read_raw(), self.key))
+                        clear.read_raw(), self.meta.key))
                 collector.insert(str(len(collector)), cryptid,
                                  pygit2.enums.FileMode.BLOB)
                 cryptcache[clear.id] = cryptid
@@ -312,7 +274,7 @@ class CryptRepo:
                 colid = collector.write()
                 cryptparents = [status[3][c] for c in commit.parent_ids]
                 status[3][str(commit.id)] = secretcommit(
-                        colid, cryptparents, self.repo, self.key)
+                        colid, cryptparents, self.repo, self.meta.template)
 
             def encrypttag(tag):
                 'encrypt a tag'
@@ -320,7 +282,8 @@ class CryptRepo:
                 cryptraw(tag, collector)
                 colid = collector.write()
                 status[3][str(tag.id)] = secretcommit(
-                    colid, [status[3][tag.target]], self.repo, self.key)
+                    colid, [status[3][tag.target]], self.repo,
+                    self.meta.template)
 
             cryptcache = {}
             totals = [len(status[1]) + len(status[2]), len(status[3])]
@@ -343,13 +306,13 @@ class CryptRepo:
             self.progressbar(None, 0, 0)
 
         # [ found, pending, ready, processed ]
-        status = [{}, {}, {}, self.readmap()]
+        status = [{}, {}, {}, self.meta.readmap()]
         children = {}
         xrefs = [[r[0], r[1], r[3],
                   f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
                   self.clearrepo.revparse_single(r[0]) if r[0] else None]
-                 for r in [[r[0], r[1], r[2], encryptrefname(r[1], self.key)]
-                           for r in refs]]
+                 for r in [[r[0], r[1], r[2], encryptrefname(r[1],
+                           self.meta.key)] for r in refs]]
         for init in xrefs:
             if init[4]:
                 register(init[4], None)
@@ -357,7 +320,7 @@ class CryptRepo:
         topologicalencryption()
         assert len(status[1]) == 0, \
             f'Not all data got processed, {status[1]} still pending'
-        writemap()
+        self.meta.write(status[3])
         for r in xrefs:
             if r[4]:
                 self.repo.create_reference(r[2], status[3][r[4].id],
@@ -373,7 +336,7 @@ class CryptRepo:
              else []) +
             ['--porcelain'] +
             (['--atomic'] if self.atomic else []) +
-            ['incrypt', '+refs/heads/map:refs/heads/map'] +
+            ['incrypt', f'+{MetaData.REFNAME}:{MetaData.REFNAME}'] +
             [r[3] for r in xrefs],
             cwd=self.name, check=False, text=True, stdout=subprocess.PIPE,
             stderr=sys.stderr if self.verbosity > 1 else subprocess.DEVNULL)
@@ -450,24 +413,127 @@ def remotehelperloop():
             raise RuntimeError(f'Unknown command: {line}')
 
 
+def mktemplate(repo, name, email, date, messages):
+    'create a template commit'
+    if not messages:
+        messages = ['Encrypted by git-incrypt.',
+                    'https://github.com/schiele/git-incrypt']
+    env = os.environ.copy()
+    if name:
+        env['GIT_AUTHOR_NAME'] = name
+        env['GIT_COMMITTER_NAME'] = name
+    if email:
+        env['GIT_AUTHOR_EMAIL'] = email
+        env['GIT_COMMITTER_EMAIL'] = email
+    if date:
+        env['GIT_AUTHOR_DATE'] = date
+        env['GIT_COMMITTER_DATE'] = date
+    templateid = subprocess.check_output(
+        ['git', 'commit-tree'] +
+        [x for m in messages for x in ('-m', m)] +
+        ['4b825dc642cb6eb9a060e54bf8d69288fbee4904'],
+        env=env).decode('utf-8').strip()
+    template = repo.get(templateid).read_raw().split(b'\n', 1)[1]
+    return template
+
+
+class MetaData:
+    'container for meta data'
+    VER = b'git-incrypt\n1.0.0\n'
+    KEYVER = b'AES-256-CBC+IV'
+    REFNAME = 'refs/heads/_'
+
+    def __init__(self, repo):
+        self.repo = repo
+        self.files = {}
+        self.key = None
+        self.template = None
+        self.defaultbranch = None
+
+    def init(self, gpgkeys, template, defaultbranch):
+        'initialize the metadata'
+        self.files['ver'] = self.repo.create_blob(MetaData.VER)
+        self.key = os.urandom(48)
+        cryptedkey = subprocess.check_output(
+            ['gpg', '-q', '-e'] + ['-r' + k for k in gpgkeys],
+            input=MetaData.KEYVER + b'\x00' + self.key)
+        self.files['key'] = self.repo.create_blob(cryptedkey)
+        self.template = template
+        self.files['msg'] = self.repo.create_blob(encryptdata(
+            hashlib.sha1(template).digest() + template, self.key))
+        self.defaultbranch = defaultbranch
+        encodedbranch = defaultbranch.encode('utf-8')
+        self.files['def'] = self.repo.create_blob(encryptdata(
+            hashlib.sha1(encodedbranch).digest() + encodedbranch, self.key))
+        return self
+
+    def read(self):
+        'read the metadata'
+        tree = self.repo.revparse_single(MetaData.REFNAME).tree
+        verobj = tree['ver']
+        self.files['ver'] = verobj.id
+        verdata = verobj.read_raw()
+        assert verdata == MetaData.VER, \
+            f'Version format is {verdata}, expected {MetaData.VER}'
+        keyobj = tree["key"]
+        self.files['key'] = keyobj.id
+        keydata = subprocess.check_output(['gpg', '-q', '-d'],
+                                          input=keyobj.read_raw())
+        keyver, self.key = keydata.split(b'\x00', 1)
+        assert keyver == MetaData.KEYVER, \
+            f'Key format is {keyver}, expected {MetaData.KEYVER}'
+        templateobj = tree["msg"]
+        self.files['msg'] = templateobj.id
+        templatedata = decryptdata(templateobj.read_raw(), self.key)
+        assert hashlib.sha1(templatedata[20:]).digest() == \
+            templatedata[0:20], 'corrupted template'
+        self.template = templatedata[20:]
+        defaultbranchobj = tree["def"]
+        self.files['def'] = defaultbranchobj.id
+        defaultbranchdata = decryptdata(defaultbranchobj.read_raw(), self.key)
+        assert hashlib.sha1(defaultbranchdata[20:]).digest() == \
+            defaultbranchdata[0:20], 'corrupted default branch information'
+        self.defaultbranch = defaultbranchdata[20:].decode('utf-8')
+        return self
+
+    def write(self, cryptmap=None):
+        'write the metadata'
+        if not cryptmap:
+            cryptmap = {}
+        rawdata = b''
+        for a, b in cryptmap.items():
+            rawdata += bytes.fromhex(a) + bytes.fromhex(b)
+        mapfile = self.repo.create_blob(encryptdata(
+            hashlib.sha1(rawdata).digest() + rawdata, self.key))
+        collector = self.repo.TreeBuilder()
+        for name, file in self.files.items():
+            collector.insert(name, file, pygit2.enums.FileMode.BLOB)
+        collector.insert('map', mapfile, pygit2.enums.FileMode.BLOB)
+        colid = collector.write()
+        commit = secretcommit(colid, [], self.repo, self.template)
+        self.repo.create_reference(MetaData.REFNAME, commit, force=True)
+        return self
+
+    def readmap(self, reverse=None):
+        'read the mapping table'
+        o = 20 if reverse else 0
+        processed = {}
+        rawdata = decryptdata(self.repo.revparse_single(
+            MetaData.REFNAME).tree["map"].read_raw(), self.key)
+        for i in range(20, len(rawdata), 40):
+            target = rawdata[i+20-o:i+40-o].hex()
+            if target in reverse if reverse else self.repo:
+                processed[rawdata[i+o:i+20+o].hex()] = target
+        return processed
+
+
 def init_command(args):
     'init incrypt repository'
     repo = pygit2.init_repository('.', bare=True)
-    key = os.urandom(48) + \
-        args.name.encode('utf-8') + b'\x00' + \
-        args.email.encode('utf-8') + b'\x00' + \
-        str(args.time).encode('utf-8') + b'\x00' + \
-        str(args.offset).encode('utf-8') + b'\x00' + \
-        args.message.encode('utf-8')
-    cryptedkey = subprocess.check_output([
-        'gpg', '-q', '-e'] + ['-r' + k for k in args.keys], input=key)
-    keyfile = repo.create_blob(FORMAT + cryptedkey)
-    collector = repo.TreeBuilder()
-    collector.insert('0', keyfile, pygit2.enums.FileMode.BLOB)
-    colid = collector.write()
-    commit = secretcommit(colid, [], repo, key)
-    repo.create_reference('refs/heads/key', commit, force=True)
-    return key
+    template = mktemplate(repo, args.name, args.email, args.date, args.m)
+    meta = MetaData(repo).init(args.keys, template, 'refs/heads/master')
+    meta.write()
+    return meta.key
 
 
 def tool():
@@ -481,19 +547,16 @@ def tool():
     init_parser = subparsers.add_parser(
         'init', help='Initialize the project')
     init_parser.add_argument(
-        '-n', '--name', type=str, default='nobody',
+        '-n', '--name', type=str, default=None,
         help='Name of the author of the encrypted commits')
     init_parser.add_argument(
-        '-e', '--email', type=str, default='nobody@nowhere.org',
+        '-e', '--email', type=str, default=None,
         help='Email of the author of the encrypted commits')
     init_parser.add_argument(
-        '-t', '--time', type=int, default=0,
+        '-d', '--date', type=str, default=None,
         help='Seconds since the epoch when the encypted commits are authored')
     init_parser.add_argument(
-        '-o', '--offset', type=int, default=0, help='Offset to UTC in hours '
-        'for the time when the encypted commits are authored')
-    init_parser.add_argument(
-        '-m', '--message', type=str, default='',
+        '-m', action='append', type=str, default=[],
         help='Message in encrypted commits')
     init_parser.add_argument(
         'keys', nargs='+', help='GPG keys used to encrypt the data')
