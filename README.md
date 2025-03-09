@@ -105,6 +105,8 @@ Within the repositories you can use commands like `git pull`, `git fetch`, or
 
 ## Concept and Discussion
 
+A sketch of the repository format can be found in [`FORMAT.md`](FORMAT.md).
+
 The approach we take here is to completely encrypt every single git object.
 With this approach no filters need to get applied as with
 https://www.agwa.name/projects/git-crypt/ but all action happens when fetching
