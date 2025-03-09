@@ -33,6 +33,14 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
+CRYPTREADME = '''# 401 Unauthorized
+
+This is an encrypted git repository.  You can clone it, but you will not be
+able to see the contents of the commits.  If you have the right key, you can
+decrypt the repository using
+[git-incrypt](https://github.com/schiele/git-incrypt).
+'''
+
 
 def cipher(key):
     'return cipher to be used'
@@ -498,6 +506,9 @@ class MetaData:
 
     def write(self, cryptmap=None):
         'write the metadata'
+        collector = self.repo.TreeBuilder()
+        for name, file in self.files.items():
+            collector.insert(name, file, pygit2.enums.FileMode.BLOB)
         if not cryptmap:
             cryptmap = {}
         rawdata = b''
@@ -505,10 +516,9 @@ class MetaData:
             rawdata += bytes.fromhex(a) + bytes.fromhex(b)
         mapfile = self.repo.create_blob(encryptdata(
             hashlib.sha1(rawdata).digest() + rawdata, self.key))
-        collector = self.repo.TreeBuilder()
-        for name, file in self.files.items():
-            collector.insert(name, file, pygit2.enums.FileMode.BLOB)
         collector.insert('map', mapfile, pygit2.enums.FileMode.BLOB)
+        readmefile = self.repo.create_blob(CRYPTREADME.encode('utf-8'))
+        collector.insert('README.md', readmefile, pygit2.enums.FileMode.BLOB)
         colid = collector.write()
         commit = secretcommit(colid, [], self.repo, self.template)
         self.repo.create_reference(MetaData.REFNAME, commit, force=True)
