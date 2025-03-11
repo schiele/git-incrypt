@@ -22,12 +22,14 @@ Encrypt git branches
 '''
 
 import subprocess
+import tempfile
 import os
 import sys
 import re
 import hashlib
 import base64
 import argparse
+import enum
 import pygit2
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
@@ -121,82 +123,86 @@ class CryptRepo:
         self.name = os.path.join(clearname, 'incrypt', hashstr)
         self.refprefix = f'refs/incrypt/{hashstr}/'
         if not os.path.isdir(self.name):
-            subprocess.run(['git', 'clone',
-                            CryptRepo.verbosityflags[self.verbosity],
-                            '-o', 'incrypt', '-c', 'fetch.prune=true',
-                            '--mirror', url, self.name],
-                           check=True, stdout=sys.stderr)
+            subprocess.run(
+                ['git', 'clone',
+                 CryptRepo.verbosityflags[self.verbosity],
+                 '--progress' if self.showprogress else '--no-progress',
+                 '-o', 'incrypt', '-c', 'fetch.prune=true',
+                 '--mirror', url, self.name],
+                check=True, stdout=sys.stderr)
             subprocess.run(['git', 'config', 'unset', 'remote.incrypt.mirror'],
                            cwd=self.name, check=True, stdout=sys.stderr)
         self.repo = pygit2.Repository(self.name)
         self.meta = MetaData(self.repo).read()
-        self.progressactive = False
 
-    def progressbar(self, what, progress, total):
-        'print a progress bar'
-        if not self.showprogress:
-            return
-        if not what:
-            if self.progressactive:
-                sys.stderr.write(', done.\n')
+    def _progress_for(self, what, iterable, function):
+        'iterate over iterable and show progress'
+        def update():
+            'update progress'
+            if self.showprogress and total:
+                nonlocal progress
+                progress += 1
+                sys.stderr.write(f'\rremote: {what}'
+                                 f' {progress/total:.0%}'
+                                 f' ({progress}/{total})')
                 sys.stderr.flush()
-            self.progressactive = False
-            return
-        self.progressactive = True
-        percent = progress / total
-        sys.stderr.write(
-            f'\r{self.remotename}: {what}: {percent:.0%} ({progress}/{total})')
-        sys.stderr.flush()
+        total = len(iterable)
+        progress = -1
+        for i in iterable:
+            update()
+            function(i)
+        update()
+        if self.showprogress and total:
+            sys.stderr.write(', done.\n')
+            sys.stderr.flush()
+
+    class RevMode(enum.Enum):
+        'mode what to retrieve from _revlist'
+        BLOB = enum.auto()
+        PARENT = enum.auto()
+        ALL = enum.auto()
+
+    @staticmethod
+    def _revlist(mode, incl, excl=None, cwd=None):
+        'run rev-list'
+        text = subprocess.check_output(
+            ['git', 'rev-list', '--objects', '--no-object-names'] +
+            (['--filter-provided-objects', '--filter=object:type=blob']
+             if mode == CryptRepo.RevMode.BLOB else
+             ['--topo-order', '--reverse', '--filter=tree:0']
+             if mode == CryptRepo.RevMode.PARENT else
+             ['--no-walk']) +
+            ['--stdin'],
+            cwd=cwd, text=True, input=''.join(
+                [f'{x}\n' for x in incl] +
+                ([f'^{x}\n' for x in excl] if excl else [])))
+        return text.strip().split('\n') if text else []
 
     def getrefs(self):
         'list all cleartext references'
-        def recursivefinddec():
-            'recursively traverse and find all commits to decrypt'
-            while status[0]:
-                oid, obj = status[0].popitem()
-                for p in obj.parents:
-                    if p.id not in status[1]:
-                        status[0][p.id] = p
-                status[1][oid] = obj
-
-        def randomdecryption():
-            'encrypt all objects in topological order'
-            def decrypttree(tree):
-                'decrypt a tree representing a commit or tag'
-                commit = None
-                for obj in tree:
-                    raw = decryptdata(obj.read_raw(), self.meta.key)
-                    tmp = self.clearrepo.odb.write(raw[20], raw[21:])
-                    if raw[20] in (pygit2.enums.ObjectType.COMMIT,
-                                   pygit2.enums.ObjectType.TAG):
-                        commit = tmp
-                return commit
-
-            total = len(status[1])
-            while status[1]:
-                oid, obj = status[1].popitem()
-                status[2][oid] = status[3][oid] \
-                    if oid in status[3] and status[3][oid] in self.clearrepo \
-                    else decrypttree(obj.tree)
-                self.progressbar('Decrypting objects', len(status[2]), total)
-            self.progressbar(None, 0, 0)
-
-        subprocess.run(['git', 'fetch',
-                        CryptRepo.verbosityflags[self.verbosity]],
-                       cwd=self.name, check=True, stdout=sys.stderr)
+        def decryptobject(oid):
+            'decrypt an object'
+            raw = decryptdata(self.repo.get(oid).read_raw(), self.meta.key)
+            return self.clearrepo.odb.write(raw[20], raw[21:])
+        subprocess.run(
+            ['git', 'fetch',
+             CryptRepo.verbosityflags[self.verbosity],
+             '--progress' if self.showprogress else '--no-progress'],
+            cwd=self.name, check=True, stdout=sys.stderr)
         # [ dec(crypt) , prefdec(crypt), crypt ]
         refs = [[r[0], self.refprefix + r[0], self.repo.revparse_single(r[1])]
                 for r in [[decryptrefname(r, self.meta.key), r] for r in
                           filter(lambda r: len(r) > 14, self.repo.references)]]
-        # [ found, ready, processed, cryptmap ]
-        status = [{}, {}, {}, self.meta.readmap(reverse=self.clearrepo)]
+        cryptmap = self.meta.readmap(reverse=self.clearrepo)
+        self._progress_for(
+            'Decrypting objects',
+            CryptRepo._revlist(CryptRepo.RevMode.BLOB, [r[2].id for r in refs],
+                               cryptmap, cwd=self.name),
+            decryptobject)
         for r in refs:
-            status[0][r[2].id] = r[2]
-        recursivefinddec()
-        randomdecryption()
-        for r in refs:
-            self.clearrepo.create_reference(r[1], status[2][r[2].id],
-                                            force=True)
+            self.clearrepo.create_reference(
+                r[1], decryptdata(r[2].tree['0'].read_raw(),
+                                  self.meta.key)[0:20].hex(), force=True)
         expected = [r[1] for r in refs]
         result = []
         for r in self.clearrepo.references:
@@ -209,147 +215,81 @@ class CryptRepo:
         return result
 
     def push(self, refs):
-        # pylint: disable=too-many-statements
-        # pylint: disable=too-many-locals
         'push refs'
-        def iscomplete(obj):
-            'check if processing is complete'
+        def encryptobject(oid):
+            'encrypt an object'
+            clear = self.clearrepo.get(oid)
+            cryptobjs[clear.id] = self.repo.create_blob(encryptdata(
+                clear.id.raw + clear.type.to_bytes(1) + clear.read_raw(),
+                self.meta.key))
+
+        def createcommit(oid):
+            'create a commit'
+            def collectorinsert(collector, oid):
+                'insert an object into the collector'
+                collector.insert(str(oid), oid, pygit2.enums.FileMode.BLOB)
+
+            def encrypttree(tree):
+                'encrypt a tree'
+                for obj in tree:
+                    if obj.type == pygit2.enums.ObjectType.TREE:
+                        encrypttree(obj)
+                    elif obj.type == pygit2.enums.ObjectType.BLOB:
+                        collectorinsert(collector, cryptobjs[obj.id])
+                collectorinsert(collector, cryptobjs[tree.id])
+
+            obj = self.clearrepo.get(oid)
+            collector = self.repo.TreeBuilder()
             if obj.type == pygit2.enums.ObjectType.COMMIT:
-                for p in obj.parents:
-                    if p.id not in status[3]:
-                        return False
-                return True
-            if obj.type == pygit2.enums.ObjectType.TAG:
-                return obj.target in status[3]
-            raise TypeError(
-                f'Unexpected type {obj.type_str} in completeness check')
+                encrypttree(obj.tree)
+            elif obj.type != pygit2.enums.ObjectType.TAG:
+                raise TypeError(
+                    f'Unexpected type {obj.type_str} in git history')
+            collector.insert('0', cryptobjs[obj.id],
+                             pygit2.enums.FileMode.BLOB)
+            colid = collector.write()
+            cryptmap[str(obj.id)] = secretcommit(
+                colid, [cryptmap[c] for c in obj.parent_ids]
+                if obj.type == pygit2.enums.ObjectType.COMMIT
+                else [cryptmap[obj.target]], self.repo, self.meta.template)
 
-        def register(obj, child):
-            'register new object'
-            if obj.id not in children:
-                children[obj.id] = []
-            if child:
-                children[obj.id].append(child)
-            if all(obj.id not in d for d in status):
-                status[0][obj.id] = obj
-
-        def recursivefind():
-            'recursively traverse and find all commits to encrypt'
-            while status[0]:
-                oid, obj = status[0].popitem()
-                if obj.type == pygit2.enums.ObjectType.COMMIT:
-                    for p in obj.parents:
-                        register(p, obj)
-                elif obj.type == pygit2.enums.ObjectType.TAG:
-                    register(obj.get_object(), obj)
-                else:
-                    raise TypeError(
-                        f'Unexpected type {obj.type_str} in git history')
-                if iscomplete(obj):
-                    status[2][oid] = obj
-                else:
-                    status[1][oid] = obj
-
-        def topologicalencryption():
-            'encrypt all objects in topological order'
-            def cryptraw(clear, collector):
-                'encrypt a raw object'
-                cryptid = cryptcache[clear.id] if clear.id in cryptcache else \
-                    self.repo.create_blob(encryptdata(
-                        clear.id.raw + clear.type.to_bytes(1) +
-                        clear.read_raw(), self.meta.key))
-                collector.insert(str(len(collector)), cryptid,
-                                 pygit2.enums.FileMode.BLOB)
-                cryptcache[clear.id] = cryptid
-
-            def encryptcommit(commit):
-                'encrypt a commit'
-                def encrypttree(tree):
-                    'encrypt a tree'
-                    for obj in tree:
-                        if selfcontained or obj.id not in cryptcache:
-                            if obj.type == pygit2.enums.ObjectType.TREE:
-                                encrypttree(obj)
-                            elif obj.type == pygit2.enums.ObjectType.BLOB:
-                                cryptraw(obj, collector)
-                    cryptraw(tree, collector)
-
-                selfcontained = True
-                collector = self.repo.TreeBuilder()
-                if selfcontained or commit.tree.id not in cryptcache:
-                    encrypttree(commit.tree)
-                cryptraw(commit, collector)
-                colid = collector.write()
-                cryptparents = [status[3][c] for c in commit.parent_ids]
-                status[3][str(commit.id)] = secretcommit(
-                        colid, cryptparents, self.repo, self.meta.template)
-
-            def encrypttag(tag):
-                'encrypt a tag'
-                collector = self.repo.TreeBuilder()
-                cryptraw(tag, collector)
-                colid = collector.write()
-                status[3][str(tag.id)] = secretcommit(
-                    colid, [status[3][tag.target]], self.repo,
-                    self.meta.template)
-
-            cryptcache = {}
-            totals = [len(status[1]) + len(status[2]), len(status[3])]
-            while status[2]:
-                oid, obj = status[2].popitem()
-                if obj.type == pygit2.enums.ObjectType.COMMIT:
-                    encryptcommit(obj)
-                elif obj.type == pygit2.enums.ObjectType.TAG:
-                    encrypttag(obj)
-                else:
-                    raise TypeError(
-                        f'Unexpected type {obj.type_str} in git history')
-                for c in children[oid]:
-                    if c.id not in status[1]:
-                        continue
-                    if iscomplete(c):
-                        status[2][c.id] = status[1].pop(c.id)
-                self.progressbar('Encrypting objects',
-                                 len(status[3]) - totals[1], totals[0])
-            self.progressbar(None, 0, 0)
-
-        # [ found, pending, ready, processed ]
-        status = [{}, {}, {}, self.meta.readmap()]
-        children = {}
         xrefs = [[r[0], r[1], r[3],
                   f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
                   self.clearrepo.revparse_single(r[0]) if r[0] else None]
                  for r in [[r[0], r[1], r[2], encryptrefname(r[1],
                            self.meta.key)] for r in refs]]
-        for init in xrefs:
-            if init[4]:
-                register(init[4], None)
-        recursivefind()
-        topologicalencryption()
-        assert len(status[1]) == 0, \
-            f'Not all data got processed, {status[1]} still pending'
-        self.meta.write(status[3])
+        cryptmap = self.meta.readmap()
+        colobjs = CryptRepo._revlist(
+            CryptRepo.RevMode.PARENT, [r[4].id for r in xrefs if r[4]],
+            cryptmap)
+        cryptobjs = {}
+        self._progress_for('Encrypting objects',
+                           CryptRepo._revlist(CryptRepo.RevMode.ALL, colobjs),
+                           encryptobject)
+        self._progress_for('Creating encrypted commits', colobjs, createcommit)
+        self.meta.write(cryptmap)
         for r in xrefs:
             if r[4]:
-                self.repo.create_reference(r[2], status[3][r[4].id],
+                self.repo.create_reference(r[2], cryptmap[r[4].id],
                                            force=True)
             else:
                 try:
                     self.repo.references.delete(r[2])
                 except KeyError:
                     pass
-        result = subprocess.run(
-            ['git', 'push'] +
-            ([CryptRepo.verbosityflags[self.verbosity]] if self.verbosity > 1
-             else []) +
-            ['--porcelain'] +
-            (['--atomic'] if self.atomic else []) +
-            ['incrypt', f'+{MetaData.REFNAME}:{MetaData.REFNAME}'] +
-            [r[3] for r in xrefs],
-            cwd=self.name, check=False, text=True, stdout=subprocess.PIPE,
-            stderr=sys.stderr if self.verbosity > 1 else subprocess.DEVNULL)
         resdict = {}
-        for line in result.stdout.split('\n'):
+        for line in subprocess.run(
+                ['git', 'push'] +
+                ([CryptRepo.verbosityflags[self.verbosity]]
+                 if self.verbosity > 1 else []) +
+                ['--progress' if self.showprogress else '--no-progress',
+                 '--porcelain'] +
+                (['--atomic'] if self.atomic else []) +
+                ['incrypt', f'+{MetaData.REFNAME}:{MetaData.REFNAME}'] +
+                [r[3] for r in xrefs],
+                cwd=self.name, check=False, text=True, stdout=subprocess.PIPE,
+                stderr=sys.stderr if self.verbosity > 1 else subprocess.DEVNULL
+                ).stdout.split('\n'):
             e = line.split('\t', 2)
             if len(e) == 3:
                 resdict[e[1].split(':', 1)[1]] = \
@@ -383,9 +323,9 @@ def remotehelperloop():
             refs.append([src, dst, force])
             line = sys.stdin.readline().strip()
         results = crypt.push(refs)
-        sys.stdout.write(f"{
+        sys.stdout.write(f'{
             ''.join([(f'error {r} {e}\n' if e else f'ok {r}\n')
-                     for r, e in results.items()])}\n")
+                     for r, e in results.items()])}\n')
 
     crypt = CryptRepo(os.environ.pop('GIT_DIR', None),
                       sys.argv[1], sys.argv[2])
@@ -398,8 +338,8 @@ def remotehelperloop():
         if command[0] == 'capabilities':
             sys.stdout.write('fetch\npush\noption\n\n')
         elif command[0] == 'list':
-            sys.stdout.write(f"{''.join([f'{r[1]} {r[0]}\n'
-                                         for r in crypt.getrefs()])}\n")
+            sys.stdout.write(f'{''.join([f'{r[1]} {r[0]}\n'
+                                         for r in crypt.getrefs()])}\n')
         elif command[0] == 'fetch':
             fetchcommand(line)
         elif command[0] == 'push':
@@ -466,6 +406,13 @@ class MetaData:
             ['gpg', '-q', '-e'] + ['-r' + k for k in gpgkeys],
             input=MetaData.KEYVER + b'\x00' + self.key)
         self.files['key'] = self.repo.create_blob(cryptedkey)
+        sig = subprocess.check_output(['gpg', '-q', '-b', '-s'],
+                                      input=self.key)
+        sigfile = self.repo.create_blob(encryptdata(
+            hashlib.sha1(sig).digest() + sig, self.key))
+        sigtree = self.repo.TreeBuilder()
+        sigtree.insert(str(sigfile), sigfile, pygit2.enums.FileMode.BLOB)
+        self.files['sig'] = sigtree.write()
         self.template = template
         self.files['msg'] = self.repo.create_blob(encryptdata(
             hashlib.sha1(template).digest() + template, self.key))
@@ -478,37 +425,54 @@ class MetaData:
     def read(self):
         'read the metadata'
         tree = self.repo.revparse_single(MetaData.REFNAME).tree
-        verobj = tree['ver']
-        self.files['ver'] = verobj.id
-        verdata = verobj.read_raw()
-        assert verdata == MetaData.VER, \
-            f'Version format is {verdata}, expected {MetaData.VER}'
-        keyobj = tree["key"]
-        self.files['key'] = keyobj.id
-        keydata = subprocess.check_output(['gpg', '-q', '-d'],
-                                          input=keyobj.read_raw())
-        keyver, self.key = keydata.split(b'\x00', 1)
+        obj = tree['ver']
+        self.files['ver'] = obj.id
+        data = obj.read_raw()
+        assert data == MetaData.VER, \
+            f'Version format is {data}, expected {MetaData.VER}'
+        obj = tree['key']
+        self.files['key'] = obj.id
+        data = subprocess.check_output(['gpg', '-q', '-d'],
+                                       input=obj.read_raw())
+        keyver, self.key = data.split(b'\x00', 1)
         assert keyver == MetaData.KEYVER, \
             f'Key format is {keyver}, expected {MetaData.KEYVER}'
-        templateobj = tree["msg"]
-        self.files['msg'] = templateobj.id
-        templatedata = decryptdata(templateobj.read_raw(), self.key)
-        assert hashlib.sha1(templatedata[20:]).digest() == \
-            templatedata[0:20], 'corrupted template'
-        self.template = templatedata[20:]
-        defaultbranchobj = tree["def"]
-        self.files['def'] = defaultbranchobj.id
-        defaultbranchdata = decryptdata(defaultbranchobj.read_raw(), self.key)
-        assert hashlib.sha1(defaultbranchdata[20:]).digest() == \
-            defaultbranchdata[0:20], 'corrupted default branch information'
-        self.defaultbranch = defaultbranchdata[20:].decode('utf-8')
+        sigtree = tree['sig']
+        for sig in sigtree:
+            decrypted = decryptdata(sig.read_raw(), self.key)
+            assert hashlib.sha1(decrypted[20:]).digest() == \
+                decrypted[0:20], 'corrupted signature'
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp.write(decrypted[20:])
+                tmp.flush()
+                sigfile = tmp.name
+            try:
+                subprocess.run(
+                    ['gpg', '--verify', '--status-fd', '1', sigfile, '-'],
+                    input=self.key, check=True)
+            finally:
+                os.remove(sigfile)
+        self.files['sig'] = sigtree.id
+        obj = tree['msg']
+        self.files['msg'] = obj.id
+        data = decryptdata(obj.read_raw(), self.key)
+        assert hashlib.sha1(data[20:]).digest() == \
+            data[0:20], 'corrupted template'
+        self.template = data[20:]
+        obj = tree['def']
+        self.files['def'] = obj.id
+        data = decryptdata(obj.read_raw(), self.key)
+        assert hashlib.sha1(data[20:]).digest() == \
+            data[0:20], 'corrupted default branch information'
+        self.defaultbranch = data[20:].decode('utf-8')
         return self
 
     def write(self, cryptmap=None):
         'write the metadata'
         collector = self.repo.TreeBuilder()
         for name, file in self.files.items():
-            collector.insert(name, file, pygit2.enums.FileMode.BLOB)
+            collector.insert(name, file, pygit2.enums.FileMode.TREE
+                             if name == 'sig' else pygit2.enums.FileMode.BLOB)
         if not cryptmap:
             cryptmap = {}
         rawdata = b''
@@ -529,10 +493,10 @@ class MetaData:
         o = 20 if reverse else 0
         processed = {}
         rawdata = decryptdata(self.repo.revparse_single(
-            MetaData.REFNAME).tree["map"].read_raw(), self.key)
+            MetaData.REFNAME).tree['map'].read_raw(), self.key)
         for i in range(20, len(rawdata), 40):
             target = rawdata[i+20-o:i+40-o].hex()
-            if target in reverse if reverse else self.repo:
+            if target in (reverse if reverse else self.repo):
                 processed[rawdata[i+o:i+20+o].hex()] = target
         return processed
 
