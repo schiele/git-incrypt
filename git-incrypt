@@ -204,7 +204,7 @@ class CryptRepo:
                 r[1], decryptdata(r[2].tree['0'].read_raw(),
                                   self.meta.key)[0:20].hex(), force=True)
         expected = [r[1] for r in refs]
-        result = []
+        result = [['HEAD', f'@{self.meta.defaultbranch}']]
         for r in self.clearrepo.references:
             if r.startswith(self.refprefix):
                 if r in expected:
