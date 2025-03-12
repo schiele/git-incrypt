@@ -145,14 +145,10 @@ detect similarities between the individual encrypted objects. Since in a
 typical workflow changes to the repository are of small increments though the
 speed increase is likely worth it. Also the initial encryption of an already
 very large repository can take quite some time. Encrypting the complete source
-repository of git takes about 45 minutes on my current laptop. By setting the
-variable `selfcontained` to `False` in the code this time goes down to only 10
-minutes. If you do so though the repository will no longer work with shallow
-clones in the future when we implement this. Therefore I left the
-self-contained version as a default since the performance penalty seems only
-relevant for the expensive initial encryption. --- And after all most users
-will have significantly smaller repositories compared to the repository of git
-itself.
+repository of git takes about 45 minutes on my current laptop. The performance
+penalty seems only relevant though for the expensive initial encryption. ---
+And after all most users will have significantly smaller repositories compared
+to the repository of git itself.
 
 The way we encrypt individual objects might reveal data that an attacker could
 use to undermine the encryption, though I tried to mitigate the risks wherever
