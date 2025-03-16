@@ -112,28 +112,61 @@ class CryptRepo:
     'encrypted repository'
     verbosityflags = ('-q', '-q', '-v', '-vv', '-vvv')
 
-    def __init__(self, clearname, remotename, url):
+    def __init__(self, clearname, url, init=None):
         assert clearname, 'This does not work yet outside a git repository'
-        self.atomic = True
+        self.atomic = False
         self.showprogress = True
         self.verbosity = 1
-        self.remotename = remotename
-        self.clearrepo = pygit2.Repository(clearname)
         hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
-        self.name = os.path.join(clearname, 'incrypt', hashstr)
         self.refprefix = f'refs/incrypt/{hashstr}/'
-        if not os.path.isdir(self.name):
-            subprocess.run(
-                ['git', 'clone',
-                 CryptRepo.verbosityflags[self.verbosity],
-                 '--progress' if self.showprogress else '--no-progress',
-                 '-o', 'incrypt', '-c', 'fetch.prune=true',
-                 '--mirror', url, self.name],
-                check=True, stdout=sys.stderr)
-            subprocess.run(['git', 'config', 'unset', 'remote.incrypt.mirror'],
-                           cwd=self.name, check=True, stdout=sys.stderr)
-        self.repo = pygit2.Repository(self.name)
-        self.meta = MetaData(self.repo).read()
+        if init:
+            self.name = clearname
+            self.repo = pygit2.init_repository(self.name, bare=True)
+            self.repo.remotes.create('incrypt', url)
+            template = self._mktemplate(init.name, init.email,
+                                        init.date, init.m)
+            self.meta = MetaData(self.repo).init(init.keys, template,
+                                                 'refs/heads/master')
+        else:
+            self.name = os.path.join(clearname, 'incrypt', hashstr)
+            if not os.path.isdir(self.name):
+                subprocess.run(
+                    ['git', 'clone',
+                     CryptRepo.verbosityflags[self.verbosity],
+                     '--progress' if self.showprogress else '--no-progress',
+                     '-o', 'incrypt', '-c', 'fetch.prune=true',
+                     '--mirror', url, self.name],
+                    check=True, stdout=sys.stderr)
+                subprocess.run(
+                    ['git', 'config', 'unset', 'remote.incrypt.mirror'],
+                    cwd=self.name, check=True, stdout=sys.stderr)
+            self.repo = pygit2.Repository(self.name)
+            self.meta = MetaData(self.repo).read()
+        self.clearrepo = pygit2.Repository(clearname)
+        self.trust()
+
+    def _mktemplate(self, name, email, date, messages):
+        'create a template commit'
+        if not messages:
+            messages = ['Encrypted by git-incrypt.',
+                        'https://github.com/schiele/git-incrypt']
+        env = os.environ.copy()
+        if name:
+            env['GIT_AUTHOR_NAME'] = name
+            env['GIT_COMMITTER_NAME'] = name
+        if email:
+            env['GIT_AUTHOR_EMAIL'] = email
+            env['GIT_COMMITTER_EMAIL'] = email
+        if date:
+            env['GIT_AUTHOR_DATE'] = date
+            env['GIT_COMMITTER_DATE'] = date
+        templateid = subprocess.check_output(
+            ['git', 'commit-tree'] +
+            [x for m in messages for x in ('-m', m)] +
+            ['4b825dc642cb6eb9a060e54bf8d69288fbee4904'],
+            cwd=self.name, env=env).decode('utf-8').strip()
+        template = self.repo.get(templateid).read_raw().split(b'\n', 1)[1]
+        return template
 
     def _progress_for(self, what, iterable, function):
         'iterate over iterable and show progress'
@@ -178,6 +211,26 @@ class CryptRepo:
                 ([f'^{x}\n' for x in excl] if excl else [])))
         return text.strip().split('\n') if text else []
 
+    def trust(self, force=False):
+        'trust this repository'
+        del force
+        try:
+            with open(os.path.join(self.name, 'incrypt-keyhash'), 'r',
+                      encoding='utf-8') as file:
+                expectedhash = file.read().strip()
+        except FileNotFoundError:
+            expectedhash = None
+        if expectedhash:
+            assert expectedhash == self.meta.keyhash, \
+                f'Key hash is {self.meta.keyhash}, was {expectedhash}'
+            trusted = True
+        else:
+            trusted = self.meta.checksigs()
+        assert trusted, 'Key is not trusted'
+        with open(os.path.join(self.name, 'incrypt-keyhash'), 'w',
+                  encoding='utf-8') as file:
+            file.write(self.meta.keyhash)
+
     def getrefs(self):
         'list all cleartext references'
         def decryptobject(oid):
@@ -189,6 +242,8 @@ class CryptRepo:
              CryptRepo.verbosityflags[self.verbosity],
              '--progress' if self.showprogress else '--no-progress'],
             cwd=self.name, check=True, stdout=sys.stderr)
+        self.meta.read()
+        self.trust()
         # [ dec(crypt) , prefdec(crypt), crypt ]
         refs = [[r[0], self.refprefix + r[0], self.repo.revparse_single(r[1])]
                 for r in [[decryptrefname(r, self.meta.key), r] for r in
@@ -327,8 +382,7 @@ def remotehelperloop():
             ''.join([(f'error {r} {e}\n' if e else f'ok {r}\n')
                      for r, e in results.items()])}\n')
 
-    crypt = CryptRepo(os.environ.pop('GIT_DIR', None),
-                      sys.argv[1], sys.argv[2])
+    crypt = CryptRepo(os.environ.pop('GIT_DIR', None), sys.argv[2])
     while True:
         sys.stdout.flush()
         line = sys.stdin.readline().strip()
@@ -361,30 +415,6 @@ def remotehelperloop():
             raise RuntimeError(f'Unknown command: {line}')
 
 
-def mktemplate(repo, name, email, date, messages):
-    'create a template commit'
-    if not messages:
-        messages = ['Encrypted by git-incrypt.',
-                    'https://github.com/schiele/git-incrypt']
-    env = os.environ.copy()
-    if name:
-        env['GIT_AUTHOR_NAME'] = name
-        env['GIT_COMMITTER_NAME'] = name
-    if email:
-        env['GIT_AUTHOR_EMAIL'] = email
-        env['GIT_COMMITTER_EMAIL'] = email
-    if date:
-        env['GIT_AUTHOR_DATE'] = date
-        env['GIT_COMMITTER_DATE'] = date
-    templateid = subprocess.check_output(
-        ['git', 'commit-tree'] +
-        [x for m in messages for x in ('-m', m)] +
-        ['4b825dc642cb6eb9a060e54bf8d69288fbee4904'],
-        env=env).decode('utf-8').strip()
-    template = repo.get(templateid).read_raw().split(b'\n', 1)[1]
-    return template
-
-
 class MetaData:
     'container for meta data'
     VER = b'git-incrypt\n1.0.0\n'
@@ -393,18 +423,23 @@ class MetaData:
 
     def __init__(self, repo):
         self.repo = repo
-        self.files = {}
+        self.files = None
         self.key = None
+        self.keyhash = None
         self.template = None
         self.defaultbranch = None
+        self.sigs = None
 
     def init(self, gpgkeys, template, defaultbranch):
         'initialize the metadata'
+        self.files = {}
         self.files['ver'] = self.repo.create_blob(MetaData.VER)
         self.key = os.urandom(48)
+        keyhashbase = MetaData.KEYVER + b'\x00' + self.key
+        self.keyhash = hashlib.sha1(keyhashbase).hexdigest()
         cryptedkey = subprocess.check_output(
             ['gpg', '-q', '-e'] + ['-r' + k for k in gpgkeys],
-            input=MetaData.KEYVER + b'\x00' + self.key)
+            input=keyhashbase)
         self.files['key'] = self.repo.create_blob(cryptedkey)
         sig = subprocess.check_output(['gpg', '-q', '-b', '-s'],
                                       input=self.key)
@@ -420,10 +455,12 @@ class MetaData:
         encodedbranch = defaultbranch.encode('utf-8')
         self.files['def'] = self.repo.create_blob(encryptdata(
             hashlib.sha1(encodedbranch).digest() + encodedbranch, self.key))
+        self.write()
         return self
 
     def read(self):
         'read the metadata'
+        self.files = {}
         tree = self.repo.revparse_single(MetaData.REFNAME).tree
         obj = tree['ver']
         self.files['ver'] = obj.id
@@ -434,25 +471,15 @@ class MetaData:
         self.files['key'] = obj.id
         data = subprocess.check_output(['gpg', '-q', '-d'],
                                        input=obj.read_raw())
+        newkeyhash = hashlib.sha1(data).hexdigest()
+        if self.keyhash:
+            assert newkeyhash == self.keyhash, \
+                f'Key hash is {newkeyhash}, was {self.keyhash}'
+        self.keyhash = newkeyhash
         keyver, self.key = data.split(b'\x00', 1)
         assert keyver == MetaData.KEYVER, \
             f'Key format is {keyver}, expected {MetaData.KEYVER}'
-        sigtree = tree['sig']
-        for sig in sigtree:
-            decrypted = decryptdata(sig.read_raw(), self.key)
-            assert hashlib.sha1(decrypted[20:]).digest() == \
-                decrypted[0:20], 'corrupted signature'
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(decrypted[20:])
-                tmp.flush()
-                sigfile = tmp.name
-            try:
-                subprocess.run(
-                    ['gpg', '--verify', '--status-fd', '1', sigfile, '-'],
-                    input=self.key, check=True)
-            finally:
-                os.remove(sigfile)
-        self.files['sig'] = sigtree.id
+        self.files['sig'] = tree['sig'].id
         obj = tree['msg']
         self.files['msg'] = obj.id
         data = decryptdata(obj.read_raw(), self.key)
@@ -466,6 +493,30 @@ class MetaData:
             data[0:20], 'corrupted default branch information'
         self.defaultbranch = data[20:].decode('utf-8')
         return self
+
+    def checksigs(self):
+        'check signatures'
+        trusted = False
+        for sig in self.repo.get(self.files['sig']):
+            decrypted = decryptdata(sig.read_raw(), self.key)
+            assert hashlib.sha1(decrypted[20:]).digest() == \
+                decrypted[0:20], 'corrupted signature'
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp.write(decrypted[20:])
+                tmp.flush()
+                sigfile = tmp.name
+            try:
+                sigoutput = subprocess.check_output(
+                    ['gpg', '--verify', '--status-fd', '1', sigfile, '-'],
+                    input=self.key).decode('utf-8').strip().split('\n')
+                sigresults = [d.split()[1] for d in sigoutput]
+                if 'GOODSIG' in sigresults and \
+                        ('TRUST_ULTIMATE' in sigresults or
+                         'TRUST_FULLY' in sigresults):
+                    trusted = True
+            finally:
+                os.remove(sigfile)
+        return trusted
 
     def write(self, cryptmap=None):
         'write the metadata'
@@ -490,10 +541,10 @@ class MetaData:
 
     def readmap(self, reverse=None):
         'read the mapping table'
+        tree = self.repo.revparse_single(MetaData.REFNAME).tree
         o = 20 if reverse else 0
         processed = {}
-        rawdata = decryptdata(self.repo.revparse_single(
-            MetaData.REFNAME).tree['map'].read_raw(), self.key)
+        rawdata = decryptdata(tree['map'].read_raw(), self.key)
         for i in range(20, len(rawdata), 40):
             target = rawdata[i+20-o:i+40-o].hex()
             if target in (reverse if reverse else self.repo):
@@ -503,11 +554,11 @@ class MetaData:
 
 def init_command(args):
     'init incrypt repository'
-    repo = pygit2.init_repository('.', bare=True)
-    template = mktemplate(repo, args.name, args.email, args.date, args.m)
-    meta = MetaData(repo).init(args.keys, template, 'refs/heads/master')
-    meta.write()
-    return meta.key
+    assert args.url.startswith('incrypt::'), \
+        'url must start with incrypt::'
+    with tempfile.TemporaryDirectory() as tempdir:
+        crypt = CryptRepo(tempdir, args.url[9:], init=args)
+        crypt.push([])
 
 
 def tool():
@@ -533,6 +584,8 @@ def tool():
         '-m', action='append', type=str, default=[],
         help='Message in encrypted commits')
     init_parser.add_argument(
+        'url', type=str, help='URL of the remote repository')
+    init_parser.add_argument(
         'keys', nargs='+', help='GPG keys used to encrypt the data')
     init_parser.set_defaults(func=init_command)
     args = parser.parse_args()
@@ -545,3 +598,5 @@ if cmd == 'git-remote-incrypt':
     remotehelperloop()
 elif cmd == 'git-incrypt':
     tool()
+
+# vim: set expandtab shiftwidth=4 tabstop=4 :
