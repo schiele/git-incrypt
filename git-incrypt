@@ -69,15 +69,6 @@ def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
     return u.update(d.update(ciphertext) + d.finalize()) + u.finalize()
 
 
-def secretcommit(tree, parents, repo, template):
-    'create secret commit wrapper'
-    raw = b'tree ' + str(tree).encode('utf-8') + b'\n'
-    for parent in parents:
-        raw += b'parent ' + str(parent).encode('utf-8') + b'\n'
-    raw += template
-    return str(repo.odb.write(pygit2.enums.ObjectType.COMMIT, raw))
-
-
 def encryptrefname(ref, key):
     'encrypt a refname'
     def splitref(s):
@@ -108,42 +99,47 @@ def decryptrefname(ref, key):
 
 
 class CryptRepo:
-    # pylint: disable=too-many-instance-attributes
     'encrypted repository'
     verbosityflags = ('-q', '-q', '-v', '-vv', '-vvv')
 
-    def __init__(self, clearname, url, init=None):
+    def __init__(self, clearname, url, init=None, forcetrust=False):
         assert clearname, 'This does not work yet outside a git repository'
-        self.atomic = False
-        self.showprogress = True
-        self.verbosity = 1
+        self.settings = {
+            'atomic': False,
+            'progress': True,
+            'verbosity': 1,
+            'followtags': False
+        }
         hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
         self.refprefix = f'refs/incrypt/{hashstr}/'
         if init:
-            self.name = clearname
-            self.repo = pygit2.init_repository(self.name, bare=True)
+            self.repo = pygit2.init_repository(clearname, bare=True)
             self.repo.remotes.create('incrypt', url)
             template = self._mktemplate(init.name, init.email,
                                         init.date, init.m)
             self.meta = MetaData(self.repo).init(init.keys, template,
                                                  'refs/heads/master')
+            self.trust(force=True, sign=True)
+            self.clearrepo = pygit2.Repository(clearname)
         else:
-            self.name = os.path.join(clearname, 'incrypt', hashstr)
-            if not os.path.isdir(self.name):
+            self.clearrepo = pygit2.Repository(clearname)
+            name = os.path.join(self.clearrepo.path, 'incrypt', hashstr)
+            if not os.path.isdir(name):
                 subprocess.run(
                     ['git', 'clone',
-                     CryptRepo.verbosityflags[self.verbosity],
-                     '--progress' if self.showprogress else '--no-progress',
+                     CryptRepo.verbosityflags[self.settings['verbosity']],
+                     '--progress' if self.settings['progress']
+                        else '--no-progress',
                      '-o', 'incrypt', '-c', 'fetch.prune=true',
-                     '--mirror', url, self.name],
+                     '--mirror', url, name],
                     check=True, stdout=sys.stderr)
                 subprocess.run(
                     ['git', 'config', 'unset', 'remote.incrypt.mirror'],
-                    cwd=self.name, check=True, stdout=sys.stderr)
-            self.repo = pygit2.Repository(self.name)
+                    cwd=name, check=True, stdout=sys.stderr)
+            self.repo = pygit2.Repository(name)
             self.meta = MetaData(self.repo).read()
-        self.clearrepo = pygit2.Repository(clearname)
-        self.trust()
+            if forcetrust:
+                self.trust(force=forcetrust)
 
     def _mktemplate(self, name, email, date, messages):
         'create a template commit'
@@ -164,7 +160,7 @@ class CryptRepo:
             ['git', 'commit-tree'] +
             [x for m in messages for x in ('-m', m)] +
             ['4b825dc642cb6eb9a060e54bf8d69288fbee4904'],
-            cwd=self.name, env=env).decode('utf-8').strip()
+            cwd=self.repo.path, env=env).decode('utf-8').strip()
         template = self.repo.get(templateid).read_raw().split(b'\n', 1)[1]
         return template
 
@@ -172,7 +168,7 @@ class CryptRepo:
         'iterate over iterable and show progress'
         def update():
             'update progress'
-            if self.showprogress and total:
+            if self.settings['progress'] and total:
                 nonlocal progress
                 progress += 1
                 sys.stderr.write(f'\rremote: {what}'
@@ -185,7 +181,7 @@ class CryptRepo:
             update()
             function(i)
         update()
-        if self.showprogress and total:
+        if self.settings['progress'] and total:
             sys.stderr.write(', done.\n')
             sys.stderr.flush()
 
@@ -211,23 +207,27 @@ class CryptRepo:
                 ([f'^{x}\n' for x in excl] if excl else [])))
         return text.strip().split('\n') if text else []
 
-    def trust(self, force=False):
+    def trust(self, force=False, sign=False):
         'trust this repository'
-        del force
-        try:
-            with open(os.path.join(self.name, 'incrypt-keyhash'), 'r',
-                      encoding='utf-8') as file:
-                expectedhash = file.read().strip()
-        except FileNotFoundError:
-            expectedhash = None
-        if expectedhash:
-            assert expectedhash == self.meta.keyhash, \
-                f'Key hash is {self.meta.keyhash}, was {expectedhash}'
+        if force:
             trusted = True
         else:
-            trusted = self.meta.checksigs()
+            try:
+                with open(os.path.join(self.repo.path, 'incrypt-keyhash'), 'r',
+                          encoding='utf-8') as file:
+                    expectedhash = file.read().strip()
+            except FileNotFoundError:
+                expectedhash = None
+            if expectedhash:
+                assert expectedhash == self.meta.keyhash, \
+                    f'Key hash is {self.meta.keyhash}, was {expectedhash}'
+                trusted = True
+            else:
+                trusted = self.meta.checksigs()
         assert trusted, 'Key is not trusted'
-        with open(os.path.join(self.name, 'incrypt-keyhash'), 'w',
+        if sign:
+            self.meta.sign()
+        with open(os.path.join(self.repo.path, 'incrypt-keyhash'), 'w',
                   encoding='utf-8') as file:
             file.write(self.meta.keyhash)
 
@@ -239,9 +239,9 @@ class CryptRepo:
             return self.clearrepo.odb.write(raw[20], raw[21:])
         subprocess.run(
             ['git', 'fetch',
-             CryptRepo.verbosityflags[self.verbosity],
-             '--progress' if self.showprogress else '--no-progress'],
-            cwd=self.name, check=True, stdout=sys.stderr)
+             CryptRepo.verbosityflags[self.settings['verbosity']],
+             '--progress' if self.settings['progress'] else '--no-progress'],
+            cwd=self.repo.path, check=True, stdout=sys.stderr)
         self.meta.read()
         self.trust()
         # [ dec(crypt) , prefdec(crypt), crypt ]
@@ -252,7 +252,7 @@ class CryptRepo:
         self._progress_for(
             'Decrypting objects',
             CryptRepo._revlist(CryptRepo.RevMode.BLOB, [r[2].id for r in refs],
-                               cryptmap, cwd=self.name),
+                               cryptmap, cwd=self.repo.path),
             decryptobject)
         for r in refs:
             self.clearrepo.create_reference(
@@ -303,10 +303,10 @@ class CryptRepo:
             collector.insert('0', cryptobjs[obj.id],
                              pygit2.enums.FileMode.BLOB)
             colid = collector.write()
-            cryptmap[str(obj.id)] = secretcommit(
+            cryptmap[str(obj.id)] = self.meta.secretcommit(
                 colid, [cryptmap[c] for c in obj.parent_ids]
                 if obj.type == pygit2.enums.ObjectType.COMMIT
-                else [cryptmap[obj.target]], self.repo, self.meta.template)
+                else [cryptmap[obj.target]])
 
         xrefs = [[r[0], r[1], r[3],
                   f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
@@ -335,15 +335,17 @@ class CryptRepo:
         resdict = {}
         for line in subprocess.run(
                 ['git', 'push'] +
-                ([CryptRepo.verbosityflags[self.verbosity]]
-                 if self.verbosity > 1 else []) +
-                ['--progress' if self.showprogress else '--no-progress',
-                 '--porcelain'] +
-                (['--atomic'] if self.atomic else []) +
+                ([CryptRepo.verbosityflags[self.settings['verbosity']]]
+                 if self.settings['verbosity'] > 1 else []) +
+                ['--progress' if self.settings['progress']
+                    else '--no-progress', '--porcelain'] +
+                (['--atomic'] if self.settings['atomic'] else []) +
                 ['incrypt', f'+{MetaData.REFNAME}:{MetaData.REFNAME}'] +
                 [r[3] for r in xrefs],
-                cwd=self.name, check=False, text=True, stdout=subprocess.PIPE,
-                stderr=sys.stderr if self.verbosity > 1 else subprocess.DEVNULL
+                cwd=self.repo.path, check=False, text=True,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr if self.settings['verbosity'] > 1
+                else subprocess.DEVNULL
                 ).stdout.split('\n'):
             e = line.split('\t', 2)
             if len(e) == 3:
@@ -353,7 +355,6 @@ class CryptRepo:
 
 
 def remotehelperloop():
-    # pylint: disable=too-many-branches
     'communication loop'
     def fetchcommand(line):
         'parse fetch batch'
@@ -399,18 +400,13 @@ def remotehelperloop():
         elif command[0] == 'push':
             pushcommand(line)
         elif command[0] == 'option':
-            if command[1] == 'atomic':
-                crypt.atomic = command[2] == 'true'
-            elif command[1] == 'progress':
-                crypt.showprogress = command[2] == 'true'
-            elif command[1] == 'verbosity':
-                crypt.verbosity = int(command[2])
-            elif command[1] == 'followtags':
-                pass
+            if command[1] in ['atomic', 'progress', 'verbosity', 'followtags']:
+                crypt.settings[command[1]] = command[2] == 'true' \
+                    if isinstance(crypt.settings[command[1]], bool) \
+                    else int(command[2])
+                sys.stdout.write('ok\n')
             else:
                 sys.stdout.write('unsupported\n')
-                continue
-            sys.stdout.write('ok\n')
         else:
             raise RuntimeError(f'Unknown command: {line}')
 
@@ -428,7 +424,6 @@ class MetaData:
         self.keyhash = None
         self.template = None
         self.defaultbranch = None
-        self.sigs = None
 
     def init(self, gpgkeys, template, defaultbranch):
         'initialize the metadata'
@@ -441,13 +436,7 @@ class MetaData:
             ['gpg', '-q', '-e'] + ['-r' + k for k in gpgkeys],
             input=keyhashbase)
         self.files['key'] = self.repo.create_blob(cryptedkey)
-        sig = subprocess.check_output(['gpg', '-q', '-b', '-s'],
-                                      input=self.key)
-        sigfile = self.repo.create_blob(encryptdata(
-            hashlib.sha1(sig).digest() + sig, self.key))
-        sigtree = self.repo.TreeBuilder()
-        sigtree.insert(str(sigfile), sigfile, pygit2.enums.FileMode.BLOB)
-        self.files['sig'] = sigtree.write()
+        self.files['sig'] = self.repo.TreeBuilder().write()
         self.template = template
         self.files['msg'] = self.repo.create_blob(encryptdata(
             hashlib.sha1(template).digest() + template, self.key))
@@ -494,6 +483,16 @@ class MetaData:
         self.defaultbranch = data[20:].decode('utf-8')
         return self
 
+    def sign(self):
+        'sign key'
+        sig = subprocess.check_output(['gpg', '-q', '-b', '-s'],
+                                      input=self.key)
+        sigfile = self.repo.create_blob(encryptdata(
+            hashlib.sha1(sig).digest() + sig, self.key))
+        sigtree = self.repo.TreeBuilder(self.repo.get(self.files['sig']))
+        sigtree.insert(str(sigfile), sigfile, pygit2.enums.FileMode.BLOB)
+        self.files['sig'] = sigtree.write()
+
     def checksigs(self):
         'check signatures'
         trusted = False
@@ -518,6 +517,14 @@ class MetaData:
                 os.remove(sigfile)
         return trusted
 
+    def secretcommit(self, tree, parents):
+        'create secret commit wrapper'
+        raw = b'tree ' + str(tree).encode('utf-8') + b'\n'
+        for parent in parents:
+            raw += b'parent ' + str(parent).encode('utf-8') + b'\n'
+        raw += self.template
+        return str(self.repo.odb.write(pygit2.enums.ObjectType.COMMIT, raw))
+
     def write(self, cryptmap=None):
         'write the metadata'
         collector = self.repo.TreeBuilder()
@@ -535,7 +542,7 @@ class MetaData:
         readmefile = self.repo.create_blob(CRYPTREADME.encode('utf-8'))
         collector.insert('README.md', readmefile, pygit2.enums.FileMode.BLOB)
         colid = collector.write()
-        commit = secretcommit(colid, [], self.repo, self.template)
+        commit = self.secretcommit(colid, [])
         self.repo.create_reference(MetaData.REFNAME, commit, force=True)
         return self
 
@@ -558,6 +565,18 @@ def init_command(args):
         'url must start with incrypt::'
     with tempfile.TemporaryDirectory() as tempdir:
         crypt = CryptRepo(tempdir, args.url[9:], init=args)
+        crypt.push([])
+
+
+def trust_command(args):
+    'trust incrypt repository'
+    remotes = pygit2.Repository('.').remotes
+    url = remotes[args.remote].url if args.remote in remotes else args.remote
+    assert url.startswith('incrypt::'), \
+        'url must start with incrypt::'
+    crypt = CryptRepo('.', url[9:], forcetrust=True)
+    if args.sign:
+        crypt.meta.sign()
         crypt.push([])
 
 
@@ -588,6 +607,15 @@ def tool():
     init_parser.add_argument(
         'keys', nargs='+', help='GPG keys used to encrypt the data')
     init_parser.set_defaults(func=init_command)
+    trust_parser = subparsers.add_parser(
+        'trust', help='Trust the remote repository')
+    trust_parser.add_argument(
+        'remote', nargs='?', default='origin',
+        help='Name of the remote')
+    trust_parser.add_argument(
+        '-s', '--sign', action='store_true',
+        help='Sign the key')
+    trust_parser.set_defaults(func=trust_command)
     args = parser.parse_args()
     args.func(args)
 
