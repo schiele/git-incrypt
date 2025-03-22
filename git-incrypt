@@ -424,6 +424,7 @@ class MetaData:
         self.keyhash = None
         self.template = None
         self.defaultbranch = None
+        self.gpgkeys = []
 
     def init(self, gpgkeys, template, defaultbranch):
         'initialize the metadata'
@@ -447,6 +448,14 @@ class MetaData:
         self.write()
         return self
 
+    def addkey(self, gpgkeys):
+        'add gpg key'
+        self.gpgkeys += gpgkeys
+        cryptedkey = subprocess.check_output(
+            ['gpg', '-q', '-e'] + ['-r' + k for k in self.gpgkeys],
+            input=MetaData.KEYVER + b'\x00' + self.key)
+        self.files['key'] = self.repo.create_blob(cryptedkey)
+
     def read(self):
         'read the metadata'
         self.files = {}
@@ -468,6 +477,13 @@ class MetaData:
         keyver, self.key = data.split(b'\x00', 1)
         assert keyver == MetaData.KEYVER, \
             f'Key format is {keyver}, expected {MetaData.KEYVER}'
+        keydata = subprocess.check_output(
+            ['gpg', '-q', '--list-packets'],
+            input=obj.read_raw()).decode('utf-8').split('\n')
+        for k in keydata:
+            match = re.search(r'^:pubkey enc packet:.*keyid ([0-9A-F]+)', k)
+            if match:
+                self.gpgkeys.append(match.group(1))
         self.files['sig'] = tree['sig'].id
         obj = tree['msg']
         self.files['msg'] = obj.id
@@ -568,12 +584,27 @@ def init_command(args):
         crypt.push([])
 
 
+def addkey_command(args):
+    'add key to incrypt repository'
+    try:
+        url = pygit2.Repository('.').remotes[args.remote].url
+    except (KeyError, ValueError):
+        url = args.remote
+    assert url.startswith('incrypt::'), \
+        f'url `{url}` must start with incrypt::'
+    crypt = CryptRepo('.', url[9:])
+    crypt.meta.addkey(args.keys)
+    crypt.push([])
+
+
 def trust_command(args):
     'trust incrypt repository'
-    remotes = pygit2.Repository('.').remotes
-    url = remotes[args.remote].url if args.remote in remotes else args.remote
+    try:
+        url = pygit2.Repository('.').remotes[args.remote].url
+    except (KeyError, ValueError):
+        url = args.remote
     assert url.startswith('incrypt::'), \
-        'url must start with incrypt::'
+        f'url `{url}` must start with incrypt::'
     crypt = CryptRepo('.', url[9:], forcetrust=True)
     if args.sign:
         crypt.meta.sign()
@@ -607,6 +638,13 @@ def tool():
     init_parser.add_argument(
         'keys', nargs='+', help='GPG keys used to encrypt the data')
     init_parser.set_defaults(func=init_command)
+    addkey_parser = subparsers.add_parser(
+        'addkey', help='Add an encryption key')
+    addkey_parser.add_argument(
+        'remote', type=str, help='Name of the remote')
+    addkey_parser.add_argument(
+        'keys', nargs='+', help='GPG keys to add')
+    addkey_parser.set_defaults(func=addkey_command)
     trust_parser = subparsers.add_parser(
         'trust', help='Trust the remote repository')
     trust_parser.add_argument(

@@ -54,12 +54,10 @@ git incrypt init $URL $GPG_KEY_ID
 
 where `$URL` is the URL of the remote repository prefixed with `incrypt::` to
 be initialized and `$GPG_KEY_ID` is one or multiple GPG key IDs to be used to
-encrypt the data in the repository. Note that this version does not yet have a
-command to change the list of keys later, so give it a thought before setting
-up the repository. However if you need to change keys you can always delete
-the encrypted repository later and re-initialize it with other keys. For sure
-we should have a command in future versions that an re-encrypt the data with
-new keys in the future.
+encrypt the data in the repository.
+
+If needed you can later add additional keys using the `git incrypt add`
+command.
 
 From now on you can just use the regular git commands to communicate with the
 encrypted remote repository. They all should work in the ususal way but

@@ -10,6 +10,7 @@ SYNOPSIS
 --------
 [verse]
 'git incrypt' init [-n <name>] [-e <email>] [-d <date>] [-m <msg>] <repository> <key>...
+'git incrypt' addkey <repository> <key>...
 'git incrypt' trust [-s] <repository>
 
 
@@ -62,6 +63,19 @@ If not provided, the date of initialization is used.
 repository. If not provided, a standard message is used. Similar to
 the `git commit` command, this option can be specified multiple
 times to add multiple paragraphs to the commit message.
+
+addkey <repository> <key>...::
+	Add the given GPG key to the list of allowed keys for the
+	repository.
++
+<repository> is the URL of the remote repository to add the key to.
+It needs to start with `incrypt::` and the remainder needs to be a
+URL git can understand, e.g. `incrypt::https://github.com/foo/bar.git`.
+Alternatively, a registered remote name that points to a URL
+qualifying to the criteria above can be used.
++
+<key> is a list of GPG keys to add as allowed keys to access the
+repository.
 
 trust [-s] <repository>::
 	Mark the given repository as trusted. If the `-s` option is
