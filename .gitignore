@@ -1,4 +1,6 @@
 .*.swp
+*.o
+/git-remote-incrypt
 /man1
 /crypt
 /tst
