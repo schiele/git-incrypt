@@ -4,18 +4,30 @@ VERBOSE :=
 TESTREPO := ~/sysconf
 KEY := 5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7
 REPO := incrypt::$(CURDIR)/crypt
+CPPFLAGS := -Igit
 
-.PHONY: all man test clean
+.PHONY: all gitbuild man test clean
 
-all: man
+all: git-remote-incrypt man
 man: man1/git-incrypt.1
 
-man1/%.1: man1/%.xml manpage-normal.xsl manpage-bold-literal.xsl
+git-remote-incrypt: incrypt.o git/common-main.o git/libgit.a git/xdiff/lib.a git/reftable/libreftable.a
+	gcc -lz -o $@ $^
+
+man1/%.1: man1/%.xml git/Documentation/manpage-normal.xsl git/Documentation/manpage-bold-literal.xsl
 	cd man1 && xmlto $(patsubst %,-m ../%,$(wordlist 2, 3, $^)) man ../$<
 
-man1/%.xml: %.adoc asciidoc.conf
+man1/%.xml: %.adoc git/Documentation/asciidoc.conf
 	mkdir -p man1
 	asciidoc -f $(word 2, $^) -b docbook -d manpage -o $@ $<
+
+git/Documentation/asciidoc.conf: gitdoc
+
+gitbuild:
+	$(MAKE) -C git
+
+gitdoc:
+	$(MAKE) -C git doc
 
 test: man
 	PAGER= git incrypt --help
@@ -40,4 +52,4 @@ test: man
 	pycodestyle git-incrypt
 
 clean:
-	rm -rf man1 crypt tst
+	rm -rf *.o git-remote-incrypt man1 crypt tst
