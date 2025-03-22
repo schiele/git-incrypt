@@ -1,0 +1,117 @@
+git-incrypt(1)
+==============
+
+NAME
+----
+git-incrypt - Initialize and manage trust of git-incrypt repositories
+
+
+SYNOPSIS
+--------
+[verse]
+'git incrypt' init [-n <name>] [-e <email>] [-d <date>] [-m <msg>] <repository> <key>...
+'git incrypt' trust [-s] <repository>
+
+
+DESCRIPTION
+-----------
+Initializes and manages trust of git-incrypt repositories.
+
+Git-incrypt repositories are encrypted git repositories that can be
+used by all users with a registered GPG key in a fully transparent
+way using regular git commands.
+
+COMMANDS
+--------
+Several subcommands are available to perform operations on the
+git-incrypt repositories.
+
+init [-n <name>] [-e <email>] [-d <date>] [-m <msg>] <repository> <key>...::
+	Initialize the given repository with git-incrypt meta data,
+	including an encryption key. This creates a random key that
+	will be encrypted for all users in posession of one of the
+	listed GPG keys. All content in the repository will be
+	presented with the same commit message in its encrypted form.
+	By default this commit message provides a standard message
+	and will have the git user that initialized the repository as
+	author and committer and be dated by the time of repository
+	initialization. All those values can be overridden with the
+	`-n`, `-e`, `-d` and `-m` options.
++
+<repository> is the URL of the remote repository to initialize. It
+needs to start with `incrypt::` and the remainder needs to be a URL
+git can understand, e.g. `incrypt::https://github.com/foo/bar.git`.
++
+<key> is a list of GPG keys that are allowed to access the
+repository.
++
+<name> is the name of the user that is used as the author and
+committer of each commit in the encrypted repository. If not
+provided, the git user name of the person invoking the init command
+is used.
++
+<email> is the email address of the user that is used as the
+author and committer of each commit in the encrypted repository.
+If not provided, the git user email of the person invoking the init
+command is used.
++
+<date> is the date used for each commit in the encrypted repository.
+If not provided, the date of initialization is used.
++
+<msg> is the commit message used for each commit in the encrypted
+repository. If not provided, a standard message is used. Similar to
+the `git commit` command, this option can be specified multiple
+times to add multiple paragraphs to the commit message.
+
+trust [-s] <repository>::
+	Mark the given repository as trusted. If the `-s` option is
+	given, the repository will also be signed with the users GPG
+	key.
++
+<repository> is the URL of the remote repository to trust. It
+needs to start with `incrypt::` and the remainder needs to be a URL
+git can understand, e.g. `incrypt::https://github.com/foo/bar.git`.
+Alternatively, a registered remote name that points to a URL
+qualifying to the criteria above can be used.
+
+OPTIONS
+-------
+-n <name>::
+--name <name>::
+	Name of the user that is used as the author and committer of
+	each commit in the encrypted repository. If not provided, the
+	git user name of the person invoking the init command is used.
+
+-e <email>::
+--email <email>::
+	Email address of the user that is used as the author and
+	committer of each commit in the encrypted repository. If not
+	provided, the git user email of the person invoking the init
+	command is used.
+
+-d <date>::
+--date <date>::
+	Date used for each commit in the encrypted repository. If not
+	provided, the date of initialization is used.
+
+-m <msg>::
+	Commit message used for each commit in the encrypted
+	repository. If not provided, a standard message is used.
+	Similar to the `git commit` command, this option can be
+	specified multiple times to add multiple paragraphs to the
+	commit message.
+
+-s::
+--sign::
+	Sign the repository with the users GPG key.
+
+<repository>::
+	URL of the remote repository to initialize. It needs to start
+	with `incrypt::` and the remainder needs to be a URL git can
+	understand, e.g. `incrypt::https://github.com/foo/bar.git`.
+	With the exception of the `init` command, alternatively, a
+	registered remote name that points to a URL qualifying to the
+	criteria above can be used.
+
+<key>...::
+	A list of GPG keys that are allowed to access the repository.

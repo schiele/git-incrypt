@@ -40,6 +40,10 @@ directory that is in the system search path.
 I recommend you configure GPG to use an agent and it is likely not a good idea
 to receive password prompts during git operations.
 
+Optionally, you may also build the man page by invoking `make`. This will
+generate a man page into `man1`, which you can install into a directory that
+is in yout MANPATH.
+
 ## Usage
 
 Use the following command to create a new encrypted repository:
