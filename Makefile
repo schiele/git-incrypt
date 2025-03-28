@@ -16,6 +16,10 @@ CPPFLAGS := -Igit
 
 all: git-remote-incrypt man
 
+COMPILER_FEATURES := $(shell git/detect-compiler $(CC))
+include git/config.mak.dev
+CFLAGS += $(DEVELOPER_CFLAGS)
+
 ifndef NODOC
 man: man1/git-incrypt.1
 testman: man

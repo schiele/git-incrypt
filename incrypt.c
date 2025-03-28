@@ -1,3 +1,5 @@
+/* -*- indent-tabs-mode: t; tab-width: 8; c-basic-offset: 8 -*- */
+
 #define USE_THE_REPOSITORY_VARIABLE
 
 #include "git-compat-util.h"
@@ -8,7 +10,7 @@
 #include "setup.h"
 #include "trace2.h"
 
-static struct remote* remote;
+static struct remote *remote;
 static const char* url;
 
 struct options {
@@ -23,11 +25,12 @@ static int set_option(const char *name, size_t namelen, const char *value)
 	if (!strncmp(name, "verbosity", namelen)) {
 		char *end;
 		int v = strtol(value, &end, 10);
-		if (end == value || *end)
+		if (value == end || *end)
 			return -1;
 		options.verbosity = v;
 		return 0;
-	} else if (!strncmp(name, "progress", namelen)) {
+	}
+	else if (!strncmp(name, "progress", namelen)) {
 		if (!strcmp(value, "true"))
 			options.progress = 1;
 		else if (!strcmp(value, "false"))
@@ -35,7 +38,8 @@ static int set_option(const char *name, size_t namelen, const char *value)
 		else
 			return -1;
 		return 0;
-	} else if (!strncmp(name, "followtags", namelen)) {
+	}
+	else if (!strncmp(name, "followtags", namelen)) {
 		return 0;
 	} else if (!strncmp(name, "atomic", namelen)) {
 		if (!strcmp(value, "true"))
@@ -46,12 +50,34 @@ static int set_option(const char *name, size_t namelen, const char *value)
 			return -1;
 		return 0;
 	} else {
-		return 1;
+		return 1 /* unsupported */;
 	}
+}
+
+static struct ref *get_refs(void)
+{
+	return NULL;
+}
+
+static void output_refs(struct ref *refs)
+{
+	struct ref *posn;
+	for (posn = refs; posn; posn = posn->next) {
+		if (posn->symref)
+			printf("@%s %s\n", posn->symref, posn->name);
+		else
+			printf("%s %s\n", hash_to_hex_algop(posn->old_oid.hash,
+							    &hash_algos[GIT_HASH_SHA1]),
+					  posn->name);
+	}
+	printf("\n");
+	fflush(stdout);
 }
 
 static int fetch(int nr_heads, struct ref **to_fetch)
 {
+	(void)nr_heads;
+	(void)to_fetch;
 	return 0;
 }
 
@@ -77,7 +103,7 @@ static void parse_fetch(struct strbuf *buf)
 			else if (!*q)
 				name = "";
 			else
-				die(_("protocol error: expected sha/ref, got '%s'"), q);
+				die(_("protocol error: expected sha/ref, got '%s'"), p);
 
 			ref = alloc_ref(name);
 			oidcpy(&ref->old_oid, &old_oid);
@@ -89,7 +115,7 @@ static void parse_fetch(struct strbuf *buf)
 			to_fetch[nr_heads++] = ref;
 		}
 		else
-			die(_("inctypt does not support %s"), buf->buf);
+			die(_("remote-inctypt does not support %s"), buf->buf);
 
 		strbuf_reset(buf);
 		if (strbuf_getline_lf(buf, stdin) == EOF)
@@ -99,7 +125,7 @@ static void parse_fetch(struct strbuf *buf)
 	} while (1);
 
 	if (fetch(nr_heads, to_fetch))
-		exit(128);
+		exit(128); /* error already reported */
 	free_refs(list_head);
 	free(to_fetch);
 
@@ -108,7 +134,15 @@ static void parse_fetch(struct strbuf *buf)
 	strbuf_reset(buf);
 }
 
-int cmd_main(int argc, const char **argv)
+static int tool_main(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+	error(_("tool not implemented"));
+	return 1;
+}
+
+static int remote_main(int argc, const char **argv)
 {
 	struct strbuf buf = STRBUF_INIT;
 	int nongit;
@@ -151,13 +185,16 @@ int cmd_main(int argc, const char **argv)
 			}
 			parse_fetch(&buf);
 
+		} else if (!strcmp(buf.buf, "list") || starts_with(buf.buf, "list ")) {
+			output_refs(get_refs());
+
 		} else if (skip_prefix(buf.buf, "option ", &arg)) {
 			const char *value = strchrnul(arg, ' ');
 			size_t arglen = value - arg;
 			int result;
 
 			if (*value)
-				value++;
+				value++; /* skip over SP */
 			else
 				value = "true";
 
@@ -183,6 +220,26 @@ int cmd_main(int argc, const char **argv)
 		strbuf_reset(&buf);
 	} while (1);
 
+	ret = 0;
 cleanup:
+	strbuf_release(&buf);
+
 	return ret;
+}
+
+int cmd_main(int argc, const char **argv)
+{
+	const char* base = strrchr(argv[0], '/');
+	if (base)
+		++base;
+	else
+		base = argv[0];
+	if (!strcmp(base, "git-remote-incrypt"))
+		return remote_main(argc, argv);
+	else if (!strcmp(base, "git-incrypt"))
+		return tool_main(argc, argv);
+	else {
+		error(_("command not implemented: %s"), base);
+		return 1;
+	}
 }
