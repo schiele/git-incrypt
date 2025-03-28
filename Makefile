@@ -9,6 +9,11 @@ CPPFLAGS := -Igit
 .PHONY: all gitbuild man test clean
 
 all: git-remote-incrypt man
+
+COMPILER_FEATURES := $(shell git/detect-compiler $(CC))
+include git/config.mak.dev
+CFLAGS += $(DEVELOPER_CFLAGS)
+
 man: man1/git-incrypt.1
 
 git-remote-incrypt: incrypt.o git/common-main.o git/libgit.a git/xdiff/lib.a git/reftable/libreftable.a
