@@ -2,3 +2,6 @@
 /man1
 /crypt
 /tst
+/*.pkg.tar.zst
+/pkg
+/src

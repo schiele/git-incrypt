@@ -1,7 +1,7 @@
 export PATH := $(CURDIR):$(PATH)
 export MANPATH := $(CURDIR):$(MANPATH)
 VERBOSE :=
-TESTREPO := ~/sysconf
+TESTREPO := $(CURDIR)
 KEY := 5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7
 REPO := incrypt::$(CURDIR)/crypt
 
@@ -27,7 +27,7 @@ test: man
 	git -C $(TESTREPO) fetch $(REPO) || git -C $(TESTREPO) incrypt trust $(REPO)
 	git -C $(TESTREPO) push $(VERBOSE) $(REPO) master~2:refs/heads/master
 	git clone $(VERBOSE) $(REPO) tst
-	git -C $(TESTREPO) push $(VERBOSE) $(REPO) secrettag
+	git -C $(TESTREPO) push $(VERBOSE) $(REPO) v0.9.0
 	git -C tst pull $(VERBOSE)
 	git -C $(TESTREPO) push $(VERBOSE) $(REPO) master
 	git -C tst pull $(VERBOSE)
