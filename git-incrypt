@@ -379,9 +379,9 @@ def remotehelperloop():
             refs.append([src, dst, force])
             line = sys.stdin.readline().strip()
         results = crypt.push(refs)
-        sys.stdout.write(f'{
+        sys.stdout.write(f'{}\n'.format(
             ''.join([(f'error {r} {e}\n' if e else f'ok {r}\n')
-                     for r, e in results.items()])}\n')
+                     for r, e in results.items()])))
 
     crypt = CryptRepo(os.environ.pop('GIT_DIR', None), sys.argv[2])
     while True:
