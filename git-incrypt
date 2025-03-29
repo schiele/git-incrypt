@@ -393,8 +393,8 @@ def remotehelperloop():
         if command[0] == 'capabilities':
             sys.stdout.write('fetch\npush\noption\n\n')
         elif command[0] == 'list':
-            sys.stdout.write(f'{''.join([f'{r[1]} {r[0]}\n'
-                                         for r in crypt.getrefs()])}\n')
+            sys.stdout.write('{}\n'.format(
+                ''.join([f'{r[1]} {r[0]}\n' for r in crypt.getrefs()])))
         elif command[0] == 'fetch':
             fetchcommand(line)
         elif command[0] == 'push':
