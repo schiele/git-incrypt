@@ -30,8 +30,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           python3 -m venv venv
-	  dir venv
-	  dir venv/Scripts
+          dir venv
+          dir venv/Scripts
           venv/Scripts/activate
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
