@@ -35,6 +35,15 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
+if not hasattr(pygit2.enums, 'FileMode'):
+    class FileMode(enum.IntFlag):
+        'definitions missing in older versions of pygit2'
+        # pylint: disable=c-extension-no-member disable=protected-access
+        TREE = pygit2._pygit2.GIT_FILEMODE_TREE
+        # pylint: disable=c-extension-no-member disable=protected-access
+        BLOB = pygit2._pygit2.GIT_FILEMODE_BLOB
+    pygit2.enums.FileMode = FileMode
+
 CRYPTREADME = '''# 401 Unauthorized
 
 This is an encrypted git repository.  You can clone it, but you will not be
