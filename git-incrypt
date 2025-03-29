@@ -379,7 +379,7 @@ def remotehelperloop():
             refs.append([src, dst, force])
             line = sys.stdin.readline().strip()
         results = crypt.push(refs)
-        sys.stdout.write(f'{}\n'.format(
+        sys.stdout.write('{}\n'.format(
             ''.join([(f'error {r} {e}\n' if e else f'ok {r}\n')
                      for r, e in results.items()])))
 
