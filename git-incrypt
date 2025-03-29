@@ -309,7 +309,7 @@ class CryptRepo:
                 else [cryptmap[str(obj.target)]])
 
         xrefs = [[r[0], r[1], r[3],
-                  f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
+                  f"{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}",
                   self.clearrepo.revparse_single(r[0]) if r[0] else None]
                  for r in [[r[0], r[1], r[2], encryptrefname(r[1],
                            self.meta.key)] for r in refs]]
