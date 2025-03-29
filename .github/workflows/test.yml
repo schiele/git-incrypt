@@ -30,8 +30,6 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           python3 -m venv $env:USERPROFILE\venv
-          dir $env:USERPROFILE\venv
-          dir $env:USERPROFILE\venv\Scripts
           "$env:USERPROFILE\venv\Scripts\activate"
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
@@ -53,7 +51,9 @@ jobs:
           git config --global user.email "testuser@example.com"
           git config --global user.name "Test User"
           gpg --batch --gen-key .github/workflows/testkey.conf
-          dir $env:USERPROFILE/venv
-          dir $env:USERPROFILE/venv/Scripts
+          dir
           "$env:USERPROFILE/venv/Scripts/activate"
+	  rm git-remote-incrypt
+	  cp git-incrypt git-remote-incrypt
+	  make
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') NODOC:=1 test
