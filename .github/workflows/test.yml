@@ -32,7 +32,7 @@ jobs:
           python3 -m $env:GITHUB_WORKSPACE\venv venv
           dir $env:GITHUB_WORKSPACE\venv
           dir $env:GITHUB_WORKSPACE\venv\Scripts
-          $env:GITHUB_WORKSPACE\venv\Scripts\activate
+          "$env:GITHUB_WORKSPACE\venv\Scripts\activate"
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
       - name: Checkout
@@ -55,5 +55,5 @@ jobs:
           gpg --batch --gen-key .github/workflows/testkey.conf
           dir $env:GITHUB_WORKSPACE/venv
           dir $env:GITHUB_WORKSPACE/venv/Scripts
-          $env:GITHUB_WORKSPACE/venv/Scripts/activate
+          "$env:GITHUB_WORKSPACE/venv/Scripts/activate"
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
