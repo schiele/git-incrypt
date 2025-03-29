@@ -22,17 +22,17 @@ jobs:
       - name: Install Python packages
         if: runner.os != 'Windows'
         run: |
-          python3 -m venv ~/venv
-          source ~/venv/bin/activate
+          python3 -m venv $GITHUB_WORKSPACE/venv
+          source $GITHUB_WORKSPACE/venv/bin/activate
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
       - name: Install Python packages
         if: runner.os == 'Windows'
         run: |
-          python3 -m venv venv
-          dir venv
-          dir venv/Scripts
-          venv/Scripts/activate
+          python3 -m $GITHUB_WORKSPACE/venv venv
+          dir $GITHUB_WORKSPACE/venv
+          dir $GITHUB_WORKSPACE/venv/Scripts
+          $GITHUB_WORKSPACE/venv/Scripts/activate
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
       - name: Checkout
@@ -45,7 +45,7 @@ jobs:
           git config --global user.email "testuser@example.com"
           git config --global user.name "Test User"
           gpg --batch --gen-key .github/workflows/testkey.conf
-          source ~/venv/bin/activate
+          source $GITHUB_WORKSPACE/venv/bin/activate
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
       - name: Test
         if: runner.os == 'Windows'
@@ -53,7 +53,7 @@ jobs:
           git config --global user.email "testuser@example.com"
           git config --global user.name "Test User"
           gpg --batch --gen-key .github/workflows/testkey.conf
-          dir venv
-          dir venv/Scripts
-          venv/Scripts/activate
+          dir $GITHUB_WORKSPACE/venv
+          dir $GITHUB_WORKSPACE/venv/Scripts
+          $GITHUB_WORKSPACE/venv/Scripts/activate
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
