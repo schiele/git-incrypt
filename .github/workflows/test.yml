@@ -29,10 +29,10 @@ jobs:
       - name: Install Python packages
         if: runner.os == 'Windows'
         run: |
-          python3 -m $GITHUB_WORKSPACE/venv venv
-          dir $GITHUB_WORKSPACE/venv
-          dir $GITHUB_WORKSPACE/venv/Scripts
-          $GITHUB_WORKSPACE/venv/Scripts/activate
+          python3 -m $GITHUB_WORKSPACE\venv venv
+          dir $GITHUB_WORKSPACE\venv
+          dir $GITHUB_WORKSPACE\venv\Scripts
+          $GITHUB_WORKSPACE\venv\Scripts\activate
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
       - name: Checkout
