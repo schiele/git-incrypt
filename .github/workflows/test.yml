@@ -53,7 +53,6 @@ jobs:
           gpg --batch --gen-key .github/workflows/testkey.conf
           dir
           "$env:USERPROFILE/venv/Scripts/activate"
-	  rm git-remote-incrypt
-	  cp git-incrypt git-remote-incrypt
-	  make
+          rm git-remote-incrypt
+          cp git-incrypt git-remote-incrypt
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') NODOC:=1 test
