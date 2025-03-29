@@ -5,20 +5,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-13, macos-14, macos-15]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-13, macos-14, macos-15, windows-2025]
     steps:
-      - name: Install system packages (Ubuntu)
+      - name: Install system dependencies (Ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y asciidoc python3-pygit2 python3-pip
-      - name: Install system packages (MacOS)
+      - name: Install system dependencies (MacOS)
         if: startsWith(matrix.os, 'macos')
         run : |
           brew update
           brew install asciidoc xmlto libgit2
           HOMEBREW_PREFIX=$(brew --prefix)
           echo "XML_CATALOG_FILES=${HOMEBREW_PREFIX}/etc/xml/catalog" >> $GITHUB_ENV
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          choco install asciidoc xmlto -y
       - name: Install Python packages
         run: |
           python3 -m venv ~/venv
