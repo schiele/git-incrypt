@@ -20,10 +20,17 @@ jobs:
           HOMEBREW_PREFIX=$(brew --prefix)
           echo "XML_CATALOG_FILES=${HOMEBREW_PREFIX}/etc/xml/catalog" >> $GITHUB_ENV
       - name: Install Python packages
+        if: runner.os != 'Windows'
         run: |
           python3 -m venv ~/venv
-          pwd
           source ~/venv/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
+      - name: Install Python packages
+        if: runner.os == 'Windows'
+        run: |
+          python3 -m venv ~/venv
+          ~/venv/Scripts/activate
           python3 -m pip install --upgrade pip
           python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
       - name: Checkout
@@ -35,6 +42,5 @@ jobs:
           git config --global user.email "testuser@example.com"
           git config --global user.name "Test User"
           gpg --batch --gen-key .github/workflows/testkey.conf
-          pwd
           source ~/venv/bin/activate
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
