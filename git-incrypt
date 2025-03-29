@@ -304,9 +304,9 @@ class CryptRepo:
                              pygit2.enums.FileMode.BLOB)
             colid = collector.write()
             cryptmap[str(obj.id)] = self.meta.secretcommit(
-                colid, [cryptmap[c] for c in obj.parent_ids]
+                colid, [cryptmap[str(c)] for c in obj.parent_ids]
                 if obj.type == pygit2.enums.ObjectType.COMMIT
-                else [cryptmap[obj.target]])
+                else [cryptmap[str(obj.target)]])
 
         xrefs = [[r[0], r[1], r[3],
                   f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
@@ -325,7 +325,7 @@ class CryptRepo:
         self.meta.write(cryptmap)
         for r in xrefs:
             if r[4]:
-                self.repo.create_reference(r[2], cryptmap[r[4].id],
+                self.repo.create_reference(r[2], cryptmap[str(r[4].id)],
                                            force=True)
             else:
                 try:

@@ -1,4 +1,4 @@
-export PATH := $(CURDIR):$(PATH)
+export GIT_EXEC_PATH := $(CURDIR):$(shell git --exec-path)
 export MANPATH := $(CURDIR):$(MANPATH)
 VERBOSE :=
 TESTREPO := $(CURDIR)
@@ -25,14 +25,14 @@ test: man
 	git ls-remote $(TESTREPO)
 	git incrypt init $(REPO) $(KEY)
 	git -C $(TESTREPO) fetch $(REPO) || git -C $(TESTREPO) incrypt trust $(REPO)
-	git -C $(TESTREPO) push $(VERBOSE) $(REPO) master~2:refs/heads/master
+	git -C $(TESTREPO) push $(VERBOSE) $(REPO) HEAD~2:refs/heads/master
 	git clone $(VERBOSE) $(REPO) tst
 	git -C $(TESTREPO) push $(VERBOSE) $(REPO) v0.9.0
 	git -C tst pull $(VERBOSE)
-	git -C $(TESTREPO) push $(VERBOSE) $(REPO) master
+	git -C $(TESTREPO) push $(VERBOSE) $(REPO) HEAD:master
 	git -C tst pull $(VERBOSE)
-	git -C $(TESTREPO) push $(VERBOSE) --all $(REPO)
-	git -C tst pull $(VERBOSE)
+	git -C $(TESTREPO) push $(VERBOSE) -f --all $(REPO)
+	git -C tst pull --no-rebase -X theirs --no-edit $(VERBOSE)
 	git ls-remote crypt
 	git -C tst ls-remote $(REPO)
 	git ls-remote tst
