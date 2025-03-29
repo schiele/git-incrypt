@@ -24,7 +24,7 @@ jobs:
           pwd
           source ~/venv/bin/activate
           python3 -m pip install --upgrade pip
-          python3 -m pip install pylint pycodestyle pygit2
+          python3 -m pip install pylint pycodestyle pygit2 cryptography
       - name: Checkout
         uses: actions/checkout@v4
         with:
