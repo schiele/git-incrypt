@@ -55,5 +55,5 @@ jobs:
           "$env:USERPROFILE/venv/Scripts/activate"
           rm git-remote-incrypt
           cp git-incrypt git-remote-incrypt
-	  dir
+          dir
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') NODOC:=1 VERBOSE:=-vvv test
