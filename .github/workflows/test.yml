@@ -29,7 +29,7 @@ jobs:
       - name: Install Python packages
         if: runner.os == 'Windows'
         run: |
-          python3 -m $env:GITHUB_WORKSPACE\venv venv
+          python3 -m venv $env:GITHUB_WORKSPACE\venv
           dir $env:GITHUB_WORKSPACE\venv
           dir $env:GITHUB_WORKSPACE\venv\Scripts
           "$env:GITHUB_WORKSPACE\venv\Scripts\activate"
