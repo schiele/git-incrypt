@@ -19,11 +19,6 @@ jobs:
           brew install asciidoc xmlto libgit2
           HOMEBREW_PREFIX=$(brew --prefix)
           echo "XML_CATALOG_FILES=${HOMEBREW_PREFIX}/etc/xml/catalog" >> $GITHUB_ENV
-      - name: Install system dependencies (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          choco install asciidoc xmlto -y
       - name: Install Python packages
         run: |
           python3 -m venv ~/venv

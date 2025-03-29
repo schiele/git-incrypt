@@ -8,7 +8,15 @@ REPO := incrypt::$(CURDIR)/crypt
 .PHONY: all man test clean
 
 all: man
+
+ifndef NODOC
 man: man1/git-incrypt.1
+testman: man
+	PAGER= git incrypt --help
+else
+man:
+testman:
+endif
 
 man1/%.1: man1/%.xml manpage-normal.xsl manpage-bold-literal.xsl
 	cd man1 && xmlto $(patsubst %,-m ../%,$(wordlist 2, 3, $^)) man ../$<
@@ -17,8 +25,7 @@ man1/%.xml: %.adoc asciidoc.conf
 	mkdir -p man1
 	asciidoc -f $(word 2, $^) -b docbook -d manpage -o $@ $<
 
-test: man
-	PAGER= git incrypt --help
+test: testman
 	rm -rf crypt tst
 	mkdir crypt
 	git -C crypt init --bare -b _
