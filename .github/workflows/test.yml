@@ -16,7 +16,7 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run : |
           brew update
-          brew install asciidoc libgit2
+          brew install asciidoc xmlto libgit2
       - name: Install Python packages
         run: |
           python3 -m venv venv
