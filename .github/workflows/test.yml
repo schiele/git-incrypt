@@ -33,4 +33,5 @@ jobs:
           git config --global user.email "testuser@example.com"
           git config --global user.name "Test User"
           gpg --batch --gen-key .github/workflows/testkey.conf
+          source venv/bin/activate
           make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
