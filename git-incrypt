@@ -43,6 +43,18 @@ if not hasattr(pygit2.enums, 'FileMode'):
         # pylint: disable=c-extension-no-member disable=protected-access
         BLOB = pygit2._pygit2.GIT_FILEMODE_BLOB
     pygit2.enums.FileMode = FileMode
+if not hasattr(pygit2.enums, 'ObjectType'):
+    class ObjectType(enum.IntEnum):
+        'definitions missing in older versions of pygit2'
+        # pylint: disable=c-extension-no-member disable=protected-access
+        COMMIT = pygit2._pygit2.GIT_OBJ_COMMIT
+        # pylint: disable=c-extension-no-member disable=protected-access
+        TREE = pygit2._pygit2.GIT_OBJ_TREE
+        # pylint: disable=c-extension-no-member disable=protected-access
+        BLOB = pygit2._pygit2.GIT_OBJ_BLOB
+        # pylint: disable=c-extension-no-member disable=protected-access
+        TAG = pygit2._pygit2.GIT_OBJ_TAG
+    pygit2.enums.ObjectType = ObjectType
 
 CRYPTREADME = '''# 401 Unauthorized
 
