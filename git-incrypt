@@ -275,8 +275,8 @@ class CryptRepo:
             'encrypt an object'
             clear = self.clearrepo.get(oid)
             cryptobjs[clear.id] = self.repo.create_blob(encryptdata(
-                clear.id.raw + clear.type.to_bytes(1) + clear.read_raw(),
-                self.meta.key))
+                clear.id.raw + clear.type.to_bytes(1, byteorder='big') +
+                clear.read_raw(), self.meta.key))
 
         def createcommit(oid):
             'create a commit'
