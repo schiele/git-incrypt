@@ -56,4 +56,4 @@ jobs:
           dir $env:USERPROFILE/venv
           dir $env:USERPROFILE/venv/Scripts
           "$env:USERPROFILE/venv/Scripts/activate"
-          make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
+          make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') NODOC:=1 test
