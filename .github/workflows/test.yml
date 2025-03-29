@@ -17,7 +17,7 @@ jobs:
         run : |
           brew update
           brew install asciidoc xmlto libgit2
-	  echo "XML_CATALOG_FILES=/opt/homebrew/etc/xml/catalog" >> $GITHUB_ENV
+          echo "XML_CATALOG_FILES=/opt/homebrew/etc/xml/catalog" >> $GITHUB_ENV
       - name: Install Python packages
         run: |
           python3 -m venv venv
