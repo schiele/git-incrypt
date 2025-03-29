@@ -1,4 +1,9 @@
-export GIT_EXEC_PATH := $(CURDIR):$(shell git --exec-path)
+ifeq ($(OS),Windows_NT)
+  PATHSEP = ;
+else
+  PATHSEP = :
+endif
+export GIT_EXEC_PATH := $(CURDIR)$(PATHSEP)$(shell git --exec-path)
 export MANPATH := $(CURDIR):$(MANPATH)
 VERBOSE :=
 TESTREPO := $(CURDIR)
