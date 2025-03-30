@@ -35,6 +35,27 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
+if not hasattr(pygit2.enums, 'FileMode'):
+    class FileMode(enum.IntFlag):
+        'definitions missing in older versions of pygit2'
+        # pylint: disable=c-extension-no-member disable=protected-access
+        TREE = pygit2._pygit2.GIT_FILEMODE_TREE
+        # pylint: disable=c-extension-no-member disable=protected-access
+        BLOB = pygit2._pygit2.GIT_FILEMODE_BLOB
+    pygit2.enums.FileMode = FileMode
+if not hasattr(pygit2.enums, 'ObjectType'):
+    class ObjectType(enum.IntEnum):
+        'definitions missing in older versions of pygit2'
+        # pylint: disable=c-extension-no-member disable=protected-access
+        COMMIT = pygit2._pygit2.GIT_OBJ_COMMIT
+        # pylint: disable=c-extension-no-member disable=protected-access
+        TREE = pygit2._pygit2.GIT_OBJ_TREE
+        # pylint: disable=c-extension-no-member disable=protected-access
+        BLOB = pygit2._pygit2.GIT_OBJ_BLOB
+        # pylint: disable=c-extension-no-member disable=protected-access
+        TAG = pygit2._pygit2.GIT_OBJ_TAG
+    pygit2.enums.ObjectType = ObjectType
+
 CRYPTREADME = '''# 401 Unauthorized
 
 This is an encrypted git repository.  You can clone it, but you will not be
@@ -275,8 +296,8 @@ class CryptRepo:
             'encrypt an object'
             clear = self.clearrepo.get(oid)
             cryptobjs[clear.id] = self.repo.create_blob(encryptdata(
-                clear.id.raw + clear.type.to_bytes(1) + clear.read_raw(),
-                self.meta.key))
+                clear.id.raw + clear.type.to_bytes(1, byteorder='big') +
+                clear.read_raw(), self.meta.key))
 
         def createcommit(oid):
             'create a commit'
@@ -304,12 +325,12 @@ class CryptRepo:
                              pygit2.enums.FileMode.BLOB)
             colid = collector.write()
             cryptmap[str(obj.id)] = self.meta.secretcommit(
-                colid, [cryptmap[c] for c in obj.parent_ids]
+                colid, [cryptmap[str(c)] for c in obj.parent_ids]
                 if obj.type == pygit2.enums.ObjectType.COMMIT
-                else [cryptmap[obj.target]])
+                else [cryptmap[str(obj.target)]])
 
         xrefs = [[r[0], r[1], r[3],
-                  f'{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}',
+                  f"{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}",
                   self.clearrepo.revparse_single(r[0]) if r[0] else None]
                  for r in [[r[0], r[1], r[2], encryptrefname(r[1],
                            self.meta.key)] for r in refs]]
@@ -325,7 +346,7 @@ class CryptRepo:
         self.meta.write(cryptmap)
         for r in xrefs:
             if r[4]:
-                self.repo.create_reference(r[2], cryptmap[r[4].id],
+                self.repo.create_reference(r[2], cryptmap[str(r[4].id)],
                                            force=True)
             else:
                 try:
@@ -379,9 +400,9 @@ def remotehelperloop():
             refs.append([src, dst, force])
             line = sys.stdin.readline().strip()
         results = crypt.push(refs)
-        sys.stdout.write(f'{
+        sys.stdout.write('{}\n'.format(
             ''.join([(f'error {r} {e}\n' if e else f'ok {r}\n')
-                     for r, e in results.items()])}\n')
+                     for r, e in results.items()])))
 
     crypt = CryptRepo(os.environ.pop('GIT_DIR', None), sys.argv[2])
     while True:
@@ -393,8 +414,8 @@ def remotehelperloop():
         if command[0] == 'capabilities':
             sys.stdout.write('fetch\npush\noption\n\n')
         elif command[0] == 'list':
-            sys.stdout.write(f'{''.join([f'{r[1]} {r[0]}\n'
-                                         for r in crypt.getrefs()])}\n')
+            sys.stdout.write('{}\n'.format(
+                ''.join([f'{r[1]} {r[0]}\n' for r in crypt.getrefs()])))
         elif command[0] == 'fetch':
             fetchcommand(line)
         elif command[0] == 'push':

@@ -1,0 +1,69 @@
+name: Test
+on: [push]
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-20.04
+          #- ubuntu-20.04-arm
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-13
+          - macos-14
+          - macos-15
+          #- windows-2019
+    steps:
+      - name: Install system dependencies (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y asciidoc python3-pygit2 python3-pip
+      - name: Install system dependencies (MacOS)
+        if: startsWith(matrix.os, 'macos')
+        run : |
+          brew update
+          brew install asciidoc xmlto libgit2
+          HOMEBREW_PREFIX=$(brew --prefix)
+          echo "XML_CATALOG_FILES=${HOMEBREW_PREFIX}/etc/xml/catalog" >> $GITHUB_ENV
+      - name: Install Python packages (Posix)
+        if: runner.os != 'Windows'
+        run: |
+          python3 -m venv ~/venv
+          source ~/venv/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
+      - name: Install Python packages (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python3 -m venv $env:USERPROFILE\venv
+          "$env:USERPROFILE\venv\Scripts\activate"
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pylint pycodestyle pygit2 cryptography asciidoc
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test (Posix)
+        if: runner.os != 'Windows'
+        run: |
+          git config --global user.email "testuser@example.com"
+          git config --global user.name "Test User"
+          gpg --batch --gen-key .github/workflows/testkey.conf
+          source ~/venv/bin/activate
+          make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') test
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git config --global user.email "testuser@example.com"
+          git config --global user.name "Test User"
+          gpg --batch --gen-key .github/workflows/testkey.conf
+          dir
+          "$env:USERPROFILE/venv/Scripts/activate"
+          rm git-remote-incrypt
+          cp git-incrypt git-remote-incrypt
+          dir
+          make KEY:=$(gpg --list-keys --with-colons | awk -F: '/^pub/ {print $5; exit}') NODOC:=1 VERBOSE:=-vvv test
