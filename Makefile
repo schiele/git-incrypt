@@ -3,7 +3,8 @@ ifeq ($(OS),Windows_NT)
 else
   PATHSEP = :
 endif
-export GIT_EXEC_PATH := $(CURDIR)$(PATHSEP)$(shell git --exec-path)
+ORIG_EXEC_PATH := $(shell git --exec-path)
+export GIT_EXEC_PATH := $(CURDIR)$(PATHSEP)$(ORIG_EXEC_PATH)
 export MANPATH := $(CURDIR)$(PATHSEP)$(MANPATH)
 VERBOSE :=
 TESTREPO := $(CURDIR)
@@ -15,7 +16,7 @@ REPO := incrypt::$(CURDIR)/crypt
 all: man
 
 ifndef NODOC
-man: man1/git-incrypt.1
+man: man1/git-incrypt.1.gz
 testman: man
 	PAGER= git incrypt --help
 else
@@ -29,6 +30,9 @@ man1/%.1: man1/%.xml manpage-normal.xsl manpage-bold-literal.xsl
 man1/%.xml: %.adoc asciidoc.conf
 	mkdir -p man1
 	asciidoc -f $(word 2, $^) -b docbook -d manpage -o $@ $<
+
+%.gz: %
+	gzip $<
 
 test: testman
 	rm -rf crypt tst
@@ -50,6 +54,18 @@ test: testman
 	git ls-remote tst
 	pylint git-incrypt
 	pycodestyle git-incrypt
+
+PKGNAME := git-incrypt
+LICENSEDIR := /usr/share/licenses
+DOCDIR := /usr/share/doc
+MANDIR := /usr/share/man
+
+install: man
+	install -D -m 755 -t $(DESTDIR)$(ORIG_EXEC_PATH) git-incrypt
+	ln -s git-incrypt $(DESTDIR)$(ORIG_EXEC_PATH)/git-remote-incrypt
+	install -D -m 644 -t $(DESTDIR)$(LICENSEDIR)/$(PKGNAME) COPYING
+	install -D -m 644 -t $(DESTDIR)$(DOCDIR)/$(PKGNAME) FORMAT.md README.md
+	install -D -m 644 -t $(DESTDIR)$(MANDIR)/man1 man1/git-incrypt.1.gz
 
 clean:
 	rm -rf man1 crypt tst
