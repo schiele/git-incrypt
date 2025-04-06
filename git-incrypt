@@ -447,6 +447,12 @@ class MetaData:
         self.defaultbranch = None
         self.gpgkeys = []
 
+    def _gpg(self, args, inp):
+        'run gpg'
+        return subprocess.check_output(
+                [f'gpg@incrypt::{self.repo.remotes['incrypt'].url}'] + args,
+                executable='gpg', input=inp)
+
     def init(self, gpgkeys, template, defaultbranch):
         'initialize the metadata'
         self.files = {}
@@ -454,9 +460,8 @@ class MetaData:
         self.key = os.urandom(48)
         keyhashbase = MetaData.KEYVER + b'\x00' + self.key
         self.keyhash = hashlib.sha1(keyhashbase).hexdigest()
-        cryptedkey = subprocess.check_output(
-            ['gpg', '-q', '-e'] + ['-r' + k for k in gpgkeys],
-            input=keyhashbase)
+        cryptedkey = self._gpg(
+            ['-q', '-e'] + ['-r' + k for k in gpgkeys], keyhashbase)
         self.files['key'] = self.repo.create_blob(cryptedkey)
         self.files['sig'] = self.repo.TreeBuilder().write()
         self.template = template
@@ -472,9 +477,9 @@ class MetaData:
     def addkey(self, gpgkeys):
         'add gpg key'
         self.gpgkeys += gpgkeys
-        cryptedkey = subprocess.check_output(
-            ['gpg', '-q', '-e'] + ['-r' + k for k in self.gpgkeys],
-            input=MetaData.KEYVER + b'\x00' + self.key)
+        cryptedkey = self._gpg(
+            ['-q', '-e'] + ['-r' + k for k in self.gpgkeys],
+            MetaData.KEYVER + b'\x00' + self.key)
         self.files['key'] = self.repo.create_blob(cryptedkey)
 
     def read(self):
@@ -488,8 +493,7 @@ class MetaData:
             f'Version format is {data}, expected {MetaData.VER}'
         obj = tree['key']
         self.files['key'] = obj.id
-        data = subprocess.check_output(['gpg', '-q', '-d'],
-                                       input=obj.read_raw())
+        data = self._gpg(['-q', '-d'], obj.read_raw())
         newkeyhash = hashlib.sha1(data).hexdigest()
         if self.keyhash:
             assert newkeyhash == self.keyhash, \
@@ -498,9 +502,8 @@ class MetaData:
         keyver, self.key = data.split(b'\x00', 1)
         assert keyver == MetaData.KEYVER, \
             f'Key format is {keyver}, expected {MetaData.KEYVER}'
-        keydata = subprocess.check_output(
-            ['gpg', '-q', '--list-packets'],
-            input=obj.read_raw()).decode('utf-8').split('\n')
+        keydata = self._gpg(['-q', '--list-packets'],
+                            obj.read_raw()).decode('utf-8').split('\n')
         for k in keydata:
             match = re.search(r'^:pubkey enc packet:.*keyid ([0-9A-F]+)', k)
             if match:
@@ -522,8 +525,7 @@ class MetaData:
 
     def sign(self):
         'sign key'
-        sig = subprocess.check_output(['gpg', '-q', '-b', '-s'],
-                                      input=self.key)
+        sig = self._gpg(['-q', '-b', '-s'], self.key)
         sigfile = self.repo.create_blob(encryptdata(
             hashlib.sha1(sig).digest() + sig, self.key))
         sigtree = self.repo.TreeBuilder(self.repo.get(self.files['sig']))
@@ -542,9 +544,9 @@ class MetaData:
                 tmp.flush()
                 sigfile = tmp.name
             try:
-                sigoutput = subprocess.check_output(
-                    ['gpg', '--verify', '--status-fd', '1', sigfile, '-'],
-                    input=self.key).decode('utf-8').strip().split('\n')
+                sigoutput = self._gpg(
+                    ['--verify', '--status-fd', '1', sigfile, '-'], self.key
+                    ).decode('utf-8').strip().split('\n')
                 sigresults = [d.split()[1] for d in sigoutput]
                 if 'GOODSIG' in sigresults and \
                         ('TRUST_ULTIMATE' in sigresults or
