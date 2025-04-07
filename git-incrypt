@@ -450,7 +450,7 @@ class MetaData:
     def _gpg(self, args, inp):
         'run gpg'
         return subprocess.check_output(
-                [f'gpg@incrypt::{self.repo.remotes['incrypt'].url}'] + args,
+                [f'gpg@incrypt::{self.repo.remotes["incrypt"].url}'] + args,
                 executable='gpg', input=inp)
 
     def init(self, gpgkeys, template, defaultbranch):
