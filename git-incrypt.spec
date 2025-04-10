@@ -41,4 +41,4 @@ make DESTDIR:="%{buildroot}" DOCDIR:=%{_docdir} MANDIR:=%{_mandir} LICENSEDIR:=/
 %{gitexecdir}/git-incrypt
 %{gitexecdir}/git-remote-incrypt
 %{_docdir}/%{name}
-%{_mandir}/man1/git-incrypt.1.gz
+%{_mandir}/man1/git-incrypt.1*
