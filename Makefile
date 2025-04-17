@@ -37,7 +37,7 @@ test: testman
 	git -C crypt init --bare -b _
 	git ls-remote $(TESTREPO)
 	git incrypt init $(REPO) $(KEY)
-	git -C $(TESTREPO) fetch $(REPO) || git -C $(TESTREPO) incrypt trust $(REPO)
+	git -C $(TESTREPO) fetch $(VERBOSE) $(REPO) || git -C $(TESTREPO) incrypt trust $(REPO)
 	git -C $(TESTREPO) push $(VERBOSE) $(REPO) HEAD~2:refs/heads/master
 	git clone $(VERBOSE) $(REPO) tst
 	git -C $(TESTREPO) push $(VERBOSE) $(REPO) v0.9.0

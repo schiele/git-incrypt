@@ -102,7 +102,7 @@ def encryptrefname(ref, key):
 
     sref = splitref(ref)
     rawname = sref[0].encode('utf-8')
-    return 'refs/heads/' + base64.b64encode(encryptdata(
+    return base64.b64encode(encryptdata(
             hashlib.sha1(rawname).digest() + rawname, key),
                                             b'+#').decode('utf-8') + sref[1]
 
@@ -132,33 +132,20 @@ class CryptRepo:
             'followtags': False
         }
         hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
-        self.refprefix = f'refs/incrypt/{hashstr}/'
+        self.prefix = f'refs/incrypt/{hashstr}/'
+        self.url = url
         if init:
             self.repo = pygit2.init_repository(clearname, bare=True)
-            self.repo.remotes.create('incrypt', url)
             template = self._mktemplate(init.name, init.email,
                                         init.date, init.m)
-            self.meta = MetaData(self.repo).init(init.keys, template,
-                                                 'refs/heads/master')
+            self.meta = MetaData(self.repo, self.url, self.prefix + '1/').init(
+                init.keys, template, 'refs/heads/master')
             self.trust(force=True, sign=True)
-            self.clearrepo = pygit2.Repository(clearname)
         else:
-            self.clearrepo = pygit2.Repository(clearname)
-            name = os.path.join(self.clearrepo.path, 'incrypt', hashstr)
-            if not os.path.isdir(name):
-                subprocess.run(
-                    ['git', 'clone',
-                     CryptRepo.verbosityflags[self.settings['verbosity']],
-                     '--progress' if self.settings['progress']
-                        else '--no-progress',
-                     '-o', 'incrypt', '-c', 'fetch.prune=true',
-                     '--mirror', url, name],
-                    check=True, stdout=sys.stderr)
-                subprocess.run(
-                    ['git', 'config', 'unset', 'remote.incrypt.mirror'],
-                    cwd=name, check=True, stdout=sys.stderr)
-            self.repo = pygit2.Repository(name)
-            self.meta = MetaData(self.repo).read()
+            self.repo = pygit2.Repository(clearname)
+            self._fetch('_')
+            self.meta = MetaData(self.repo, self.url,
+                                 self.prefix + '1/').read()
             if forcetrust:
                 self.trust(force=forcetrust)
 
@@ -228,16 +215,25 @@ class CryptRepo:
                 ([f'^{x}\n' for x in excl] if excl else [])))
         return text.strip().split('\n') if text else []
 
+    def _fetch(self, pattern):
+        subprocess.run(
+            ['git', 'fetch',
+             CryptRepo.verbosityflags[self.settings['verbosity']],
+             '--progress' if self.settings['progress'] else '--no-progress',
+             '--no-write-fetch-head', '-p', self.url,
+             f'+refs/heads/{pattern}:{self.prefix}1/{pattern}'],
+            cwd=self.repo.path, check=True, stdout=sys.stderr)
+
     def trust(self, force=False, sign=False):
         'trust this repository'
         if force:
             trusted = True
         else:
             try:
-                with open(os.path.join(self.repo.path, 'incrypt-keyhash'), 'r',
-                          encoding='utf-8') as file:
-                    expectedhash = file.read().strip()
-            except FileNotFoundError:
+                expectedhash = self.repo.revparse_single(
+                    self.prefix +
+                    'keyhash').tree['_'].read_raw().decode('utf-8')
+            except KeyError:
                 expectedhash = None
             if expectedhash:
                 assert expectedhash == self.meta.keyhash, \
@@ -248,53 +244,56 @@ class CryptRepo:
         assert trusted, 'Key is not trusted'
         if sign:
             self.meta.sign()
-        with open(os.path.join(self.repo.path, 'incrypt-keyhash'), 'w',
-                  encoding='utf-8') as file:
-            file.write(self.meta.keyhash)
+        collector = self.repo.TreeBuilder()
+        collector.insert('_', self.repo.create_blob(self.meta.keyhash),
+                         pygit2.enums.FileMode.BLOB)
+        colid = collector.write()
+        commit = self.meta.secretcommit(
+                colid, [])
+        self.repo.create_reference(self.prefix + 'keyhash', commit, force=True)
 
     def getrefs(self):
         'list all cleartext references'
         def decryptobject(oid):
             'decrypt an object'
             raw = decryptdata(self.repo.get(oid).read_raw(), self.meta.key)
-            return self.clearrepo.odb.write(raw[20], raw[21:])
-        subprocess.run(
-            ['git', 'fetch',
-             CryptRepo.verbosityflags[self.settings['verbosity']],
-             '--progress' if self.settings['progress'] else '--no-progress'],
-            cwd=self.repo.path, check=True, stdout=sys.stderr)
+            return self.repo.odb.write(raw[20], raw[21:])
+        self._fetch('*')
         self.meta.read()
         self.trust()
         # [ dec(crypt) , prefdec(crypt), crypt ]
-        refs = [[r[0], self.refprefix + r[0], self.repo.revparse_single(r[1])]
+        refs = [[r[0], self.prefix + '0/' + r[0],
+                 self.repo.revparse_single(r[1])]
                 for r in [[decryptrefname(r, self.meta.key), r] for r in
-                          filter(lambda r: len(r) > 14, self.repo.references)]]
-        cryptmap = self.meta.readmap(reverse=self.clearrepo)
+                          filter(lambda r: len(r) > len(self.prefix)+3 and
+                                 r.startswith(self.prefix + '1/'),
+                                 self.repo.references)]]
+        cryptmap = self.meta.readmap(reverse=True)
         self._progress_for(
             'Decrypting objects',
             CryptRepo._revlist(CryptRepo.RevMode.BLOB, [r[2].id for r in refs],
                                cryptmap, cwd=self.repo.path),
             decryptobject)
         for r in refs:
-            self.clearrepo.create_reference(
+            self.repo.create_reference(
                 r[1], decryptdata(r[2].tree['0'].read_raw(),
                                   self.meta.key)[0:20].hex(), force=True)
         expected = [r[1] for r in refs]
         result = [['HEAD', f'@{self.meta.defaultbranch}']]
-        for r in self.clearrepo.references:
-            if r.startswith(self.refprefix):
+        for r in self.repo.references:
+            if r.startswith(self.prefix + '0/'):
                 if r in expected:
-                    result.append([r[len(self.refprefix):],
-                                   self.clearrepo.lookup_reference(r).target])
+                    result.append([r[len(self.prefix)+2:],
+                                   self.repo.lookup_reference(r).target])
                 else:
-                    self.clearrepo.references.delete(r)
+                    self.repo.references.delete(r)
         return result
 
     def push(self, refs):
         'push refs'
         def encryptobject(oid):
             'encrypt an object'
-            clear = self.clearrepo.get(oid)
+            clear = self.repo.get(oid)
             cryptobjs[clear.id] = self.repo.create_blob(encryptdata(
                 clear.id.raw + clear.type.to_bytes(1, byteorder='big') +
                 clear.read_raw(), self.meta.key))
@@ -314,7 +313,7 @@ class CryptRepo:
                         collectorinsert(collector, cryptobjs[obj.id])
                 collectorinsert(collector, cryptobjs[tree.id])
 
-            obj = self.clearrepo.get(oid)
+            obj = self.repo.get(oid)
             collector = self.repo.TreeBuilder()
             if obj.type == pygit2.enums.ObjectType.COMMIT:
                 encrypttree(obj.tree)
@@ -329,11 +328,13 @@ class CryptRepo:
                 if obj.type == pygit2.enums.ObjectType.COMMIT
                 else [cryptmap[str(obj.target)]])
 
-        xrefs = [[r[0], r[1], r[3],
-                  f"{'+' if r[2] else ''}{r[3] if r[0] else ''}:{r[3]}",
-                  self.clearrepo.revparse_single(r[0]) if r[0] else None]
-                 for r in [[r[0], r[1], r[2], encryptrefname(r[1],
-                           self.meta.key)] for r in refs]]
+        xrefs = [[r[0], r[1], r[3], ('+' if r[2] else '') +
+                  (self.prefix + '1/' + r[3] if r[0] else '') +
+                  ':refs/heads/' + r[3],
+                  self.repo.revparse_single(r[0]) if r[0] else None]
+                 for r in [[r[0], r[1], r[2],
+                            encryptrefname(r[1], self.meta.key)]
+                           for r in refs]]
         cryptmap = self.meta.readmap()
         colobjs = CryptRepo._revlist(
             CryptRepo.RevMode.PARENT, [r[4].id for r in xrefs if r[4]],
@@ -346,11 +347,12 @@ class CryptRepo:
         self.meta.write(cryptmap)
         for r in xrefs:
             if r[4]:
-                self.repo.create_reference(r[2], cryptmap[str(r[4].id)],
-                                           force=True)
+                self.repo.create_reference(
+                    self.prefix + '1/' + r[2], cryptmap[str(r[4].id)],
+                    force=True)
             else:
                 try:
-                    self.repo.references.delete(r[2])
+                    self.repo.references.delete(self.prefix + '1/' + r[2])
                 except KeyError:
                     pass
         resdict = {}
@@ -361,7 +363,7 @@ class CryptRepo:
                 ['--progress' if self.settings['progress']
                     else '--no-progress', '--porcelain'] +
                 (['--atomic'] if self.settings['atomic'] else []) +
-                ['incrypt', f'+{MetaData.REFNAME}:{MetaData.REFNAME}'] +
+                [self.url, '+' + self.prefix + '1/_:' + MetaData.REFNAME] +
                 [r[3] for r in xrefs],
                 cwd=self.repo.path, check=False, text=True,
                 stdout=subprocess.PIPE,
@@ -372,7 +374,7 @@ class CryptRepo:
             if len(e) == 3:
                 resdict[e[1].split(':', 1)[1]] = \
                     e[2].split('(', 1)[1][0:-1] if e[0] == '!' else None
-        return {r[1]: resdict[r[2]] for r in xrefs}
+        return {r[1]: resdict['refs/heads/' + r[2]] for r in xrefs}
 
 
 def remotehelperloop():
@@ -433,13 +435,16 @@ def remotehelperloop():
 
 
 class MetaData:
+    # pylint: disable=too-many-instance-attributes
     'container for meta data'
     VER = b'git-incrypt\n1.0.0\n'
     KEYVER = b'AES-256-CBC+IV'
     REFNAME = 'refs/heads/_'
 
-    def __init__(self, repo):
+    def __init__(self, repo, url, prefix):
         self.repo = repo
+        self.url = url
+        self.prefix = prefix
         self.files = None
         self.key = None
         self.keyhash = None
@@ -450,7 +455,7 @@ class MetaData:
     def _gpg(self, args, inp):
         'run gpg'
         return subprocess.check_output(
-                [f'gpg@incrypt::{self.repo.remotes["incrypt"].url}'] + args,
+                [f'gpg@incrypt::{self.url}'] + args,
                 executable='gpg', input=inp)
 
     def init(self, gpgkeys, template, defaultbranch):
@@ -485,7 +490,7 @@ class MetaData:
     def read(self):
         'read the metadata'
         self.files = {}
-        tree = self.repo.revparse_single(MetaData.REFNAME).tree
+        tree = self.repo.revparse_single(self.prefix + '_').tree
         obj = tree['ver']
         self.files['ver'] = obj.id
         data = obj.read_raw()
@@ -582,18 +587,18 @@ class MetaData:
         collector.insert('README.md', readmefile, pygit2.enums.FileMode.BLOB)
         colid = collector.write()
         commit = self.secretcommit(colid, [])
-        self.repo.create_reference(MetaData.REFNAME, commit, force=True)
+        self.repo.create_reference(self.prefix + '_', commit, force=True)
         return self
 
-    def readmap(self, reverse=None):
+    def readmap(self, reverse=False):
         'read the mapping table'
-        tree = self.repo.revparse_single(MetaData.REFNAME).tree
+        tree = self.repo.revparse_single(self.prefix + '_').tree
         o = 20 if reverse else 0
         processed = {}
         rawdata = decryptdata(tree['map'].read_raw(), self.key)
         for i in range(20, len(rawdata), 40):
             target = rawdata[i+20-o:i+40-o].hex()
-            if target in (reverse if reverse else self.repo):
+            if target in self.repo:
                 processed[rawdata[i+o:i+20+o].hex()] = target
         return processed
 
