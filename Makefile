@@ -10,15 +10,10 @@ VERBOSE :=
 TESTREPO := $(CURDIR)
 KEY := 5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7
 REPO := incrypt::$(CURDIR)/crypt
-CPPFLAGS := -Igit
 
-.PHONY: all gitbuild man test clean
+.PHONY: all man test clean
 
 all: git-remote-incrypt man
-
-COMPILER_FEATURES := $(shell git/detect-compiler $(CC))
-include git/config.mak.dev
-CFLAGS += $(DEVELOPER_CFLAGS)
 
 ifndef NODOC
 man: man1/git-incrypt.1
@@ -29,23 +24,27 @@ man:
 testman:
 endif
 
-git-remote-incrypt: incrypt.o git/common-main.o git/libgit.a git/xdiff/lib.a git/reftable/libreftable.a
-	gcc -lz -o $@ $^
+git-%: git/git-%
+	cp $< $@
 
-man1/%.1: man1/%.xml git/Documentation/manpage-normal.xsl git/Documentation/manpage-bold-literal.xsl
-	cd man1 && xmlto $(patsubst %,-m ../%,$(wordlist 2, 3, $^)) man ../$<
+git/git-remote-incrypt: git/incrypt.c git/config.mak
+	$(MAKE) -C $(@D) DEVELOPER:=1 $(@F)
 
-man1/%.xml: %.adoc git/Documentation/asciidoc.conf
+git/%.c: %.c
+	cp $< $@
+
+man1/%.1: git/Documentation/%.1
 	mkdir -p man1
-	asciidoc -f $(word 2, $^) -b docbook -d manpage -o $@ $<
+	cp $< $@
 
-git/Documentation/asciidoc.conf: gitdoc
+git/Documentation/%.1: git/Documentation/%.adoc git/config.mak
+	$(MAKE) -C $(@D) DEVELOPER:=1 $(@F)
 
-gitbuild:
-	$(MAKE) -C git
+git/Documentation/%.adoc: %.adoc
+	cp $< $@
 
-gitdoc:
-	$(MAKE) -C git doc
+git/config.mak: config.mak
+	cp $< $@
 
 test: testman
 	rm -rf crypt tst
@@ -81,4 +80,6 @@ install: man
 	install -D -m 644 -t $(DESTDIR)$(MANDIR)/man1 man1/git-incrypt.1
 
 clean:
-	rm -rf *.o git-remote-incrypt man1 crypt tst
+	$(MAKE) -C git clean
+	rm -rf git-remote-incrypt man1 crypt tst \
+		git/config.mak git/*incrypt* git/Documentation/*incrypt*
