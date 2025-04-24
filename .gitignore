@@ -1,4 +1,5 @@
 .*.swp
+*~
 /man1
 /crypt
 /tst

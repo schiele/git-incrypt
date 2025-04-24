@@ -24,12 +24,18 @@ man:
 testman:
 endif
 
-man1/%.1: man1/%.xml manpage-normal.xsl manpage-bold-literal.xsl
-	cd man1 && xmlto $(patsubst %,-m ../%,$(wordlist 2, 3, $^)) man ../$<
-
-man1/%.xml: %.adoc asciidoc.conf
+man1/%.1: git/Documentation/%.1
 	mkdir -p man1
-	asciidoc -f $(word 2, $^) -b docbook -d manpage -o $@ $<
+	cp $< $@
+
+git/Documentation/%.1: git/Documentation/%.adoc git/config.mak
+	$(MAKE) -C $(@D) DEVELOPER:=1 $(@F)
+
+git/Documentation/%.adoc: %.adoc
+	cp $< $@
+
+git/config.mak: config.mak
+	cp $< $@
 
 test: testman
 	rm -rf crypt tst
@@ -65,4 +71,6 @@ install: man
 	install -D -m 644 -t $(DESTDIR)$(MANDIR)/man1 man1/git-incrypt.1
 
 clean:
-	rm -rf man1 crypt tst
+	$(MAKE) -C git clean
+	rm -rf man1 crypt tst \
+		git/config.mak git/*incrypt* git/Documentation/*incrypt*
