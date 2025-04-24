@@ -30,10 +30,17 @@ import hashlib
 import base64
 import argparse
 import enum
+import ctypes
 import pygit2
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.backends import default_backend
+
+plugin = ctypes.cdll.LoadLibrary(os.path.join(os.path.dirname(__file__),
+                                              'incrypt-plugin.so'))
+plugin.encryptdata.argtypes = [
+    ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p]
+plugin.decryptdata.argtypes = [
+    ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p]
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -65,29 +72,24 @@ decrypt the repository using
 '''
 
 
-def cipher(key):
-    'return cipher to be used'
-    return Cipher(algorithms.AES(key[0:32]), modes.CBC(key[32:48]),
-                  backend=default_backend())
-
-
-def pad():
-    'return patting to be used'
-    return padding.PKCS7(algorithms.AES.block_size)
-
-
 def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
     'encrypt raw data'
-    e = cipher(key).encryptor()
-    p = pad().padder()
-    return e.update(p.update(data) + p.finalize()) + e.finalize()
+    output = ctypes.create_string_buffer(len(data) + 16)
+    poutput = ctypes.c_void_p(ctypes.addressof(output))
+    outlen = ctypes.c_size_t(0)
+    poutlen = ctypes.pointer(outlen)
+    plugin.encryptdata(data, len(data), poutput, poutlen, key)
+    return output.raw[:poutlen.contents.value]
 
 
 def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
     'decrypt raw data'
-    d = cipher(key).decryptor()
-    u = pad().unpadder()
-    return u.update(d.update(ciphertext) + d.finalize()) + u.finalize()
+    output = ctypes.create_string_buffer(len(ciphertext) + 16)
+    poutput = ctypes.c_void_p(ctypes.addressof(output))
+    outlen = ctypes.c_size_t(0)
+    poutlen = ctypes.pointer(outlen)
+    plugin.decryptdata(ciphertext, len(ciphertext), poutput, poutlen, key)
+    return output.raw[:poutlen.contents.value]
 
 
 def encryptrefname(ref, key):

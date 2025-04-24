@@ -1,5 +1,6 @@
 .*.swp
 *~
+incrypt-plugin.so
 /man1
 /crypt
 /tst

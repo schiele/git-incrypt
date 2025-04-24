@@ -13,7 +13,7 @@ REPO := incrypt::$(CURDIR)/crypt
 
 .PHONY: all man test clean
 
-all: man
+all: incrypt-plugin.so man
 
 ifndef NODOC
 man: man1/git-incrypt.1
@@ -23,6 +23,15 @@ else
 man:
 testman:
 endif
+
+incrypt-plugin.so: git/incrypt-plugin.so
+	cp $< $@
+
+git/incrypt-plugin.so: git/incrypt-plugin.c git/config.mak
+	$(MAKE) -C $(@D) DEVELOPER:=1 $(@F)
+
+git/%.c: %.c
+	cp $< $@
 
 man1/%.1: git/Documentation/%.1
 	mkdir -p man1
@@ -37,7 +46,7 @@ git/Documentation/%.adoc: %.adoc
 git/config.mak: config.mak
 	cp $< $@
 
-test: testman
+test: incrypt-plugin.so testman
 	rm -rf crypt tst
 	mkdir crypt
 	git -C crypt init --bare -b _
@@ -72,5 +81,5 @@ install: man
 
 clean:
 	$(MAKE) -C git clean
-	rm -rf man1 crypt tst \
+	rm -rf incrypt-plugin.so man1 crypt tst \
 		git/config.mak git/*incrypt* git/Documentation/*incrypt*
