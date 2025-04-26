@@ -27,20 +27,23 @@ import os
 import sys
 import re
 import hashlib
-import base64
 import argparse
 import enum
 import ctypes
+import math
 import pygit2
 
 plugin = ctypes.cdll.LoadLibrary(os.path.join(os.path.dirname(__file__),
                                               'incrypt-plugin.so'))
+plugin.setkey.argtypes = [ctypes.c_void_p]
 plugin.encryptdata.argtypes = [
     ctypes.c_void_p, ctypes.c_size_t,
-    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p]
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 plugin.decryptdata.argtypes = [
     ctypes.c_void_p, ctypes.c_size_t,
-    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p]
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+plugin.encryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+plugin.decryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -74,6 +77,7 @@ decrypt the repository using
 
 def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
     'encrypt raw data'
+    plugin.setkey(key)
     output = ctypes.create_string_buffer(len(data) + 16)
     poutput = ctypes.c_void_p(ctypes.addressof(output))
     outlen = ctypes.c_size_t(0)
@@ -84,6 +88,7 @@ def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
 
 def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
     'decrypt raw data'
+    plugin.setkey(key)
     output = ctypes.create_string_buffer(len(ciphertext) + 16)
     poutput = ctypes.c_void_p(ctypes.addressof(output))
     outlen = ctypes.c_size_t(0)
@@ -94,31 +99,43 @@ def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
 
 def encryptrefname(ref, key):
     'encrypt a refname'
-    def splitref(s):
-        'split the ref from the suffix'
-        match = re.search(r'[~^]', s)
-        if match:
-            index = match.start()
-            return s[:index], s[index:]
-        return s, ''
-
-    sref = splitref(ref)
-    rawname = sref[0].encode('utf-8')
-    return base64.b64encode(encryptdata(
-            hashlib.sha1(rawname).digest() + rawname, key),
-                                            b'+#').decode('utf-8') + sref[1]
+    plugin.setkey(key)
+    output = ctypes.create_string_buffer(
+        math.ceil((20 + len(ref) + 16) * 4 / 3) + 1)
+    poutput = ctypes.c_void_p(ctypes.addressof(output))
+    plugin.encryptrefname(ref.encode('utf-8'), poutput)
+    return output.value.decode('utf-8')
 
 
 def decryptrefname(ref, key):
     'decrypt a refname'
-    try:
-        data = decryptdata(base64.b64decode(
-            ref.rsplit('/', 1)[-1], b'+#'), key)
-        assert hashlib.sha1(data[20:]).digest() == data[0:20], \
-            'corrupted reference name'
-        return data[20:].decode('utf-8')
-    except ValueError:
-        return None
+    plugin.setkey(key)
+    output = ctypes.create_string_buffer(math.floor(len(ref) * 3 / 4) - 20 + 1)
+    poutput = ctypes.c_void_p(ctypes.addressof(output))
+    plugin.decryptrefname(ref.encode('utf-8'), poutput)
+    return output.value.decode('utf-8')
+
+
+# pylint: disable=pointless-string-statement
+'''
+mykey = b'x123456789abcdefy123456789abcdefz123456789abcdef'
+plugin.setkey(mykey)
+orig = 'o?o?o?~~~a'
+print(orig)
+encoded = encryptrefname(orig, mykey)
+print(encoded)
+print(decryptrefname(encoded, mykey))
+output = ctypes.create_string_buffer(100)
+poutput = ctypes.c_void_p(ctypes.addressof(output))
+outlen = ctypes.c_size_t(0)
+poutlen = ctypes.pointer(outlen)
+plugin.decryptrefname(('refs/heads/' + encoded).encode('utf-8'), poutput)
+print(output.value)
+plugin.decryptrefname(encoded.encode('utf-8'), poutput)
+print(output.value)
+
+sys.exit(0)
+'''
 
 
 class CryptRepo:
