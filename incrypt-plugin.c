@@ -9,7 +9,7 @@
 #include "git-compat-util.h"
 #include "hash.h"
 
-void setkey(const unsigned char* k);
+void setcryptkey(const unsigned char* k);
 unsigned char* encryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
 unsigned char* decryptdata(const unsigned char* input, size_t inputlen,
@@ -19,7 +19,7 @@ char* decryptrefname(const char* input, char* output);
 
 static unsigned char key[48];
 
-void setkey(const unsigned char* k) {
+void setcryptkey(const unsigned char* k) {
 	memcpy(key, k, 48);
 }
 
