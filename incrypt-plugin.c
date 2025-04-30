@@ -9,6 +9,11 @@
 #include "git-compat-util.h"
 #include "hash.h"
 
+void globalinit(void);
+int set_option(const char *name, size_t namelen, const char *value);
+int getverbosity(void);
+int getprogress(void);
+int getatomic(void);
 void setcryptkey(const unsigned char* k);
 unsigned char* encryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
@@ -16,6 +21,68 @@ unsigned char* decryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
 char* encryptrefname(const char* input, char* output);
 char* decryptrefname(const char* input, char* output);
+
+struct options {
+	int verbosity;
+	unsigned progress : 1,
+		atomic : 1;
+};
+static struct options options;
+
+void globalinit(void) {
+	options.verbosity = 1;
+	options.progress = !!isatty(2);
+	options.atomic = 0;
+}
+
+/*static*/ int set_option(const char *name, size_t namelen, const char *value)
+{
+	if (!strncmp(name, "verbosity", namelen)) {
+		char *end;
+		int v = strtol(value, &end, 10);
+		if (value == end || *end)
+			return -1;
+		options.verbosity = v;
+		return 0;
+	}
+	else if (!strncmp(name, "progress", namelen)) {
+		if (!strcmp(value, "true"))
+			options.progress = 1;
+		else if (!strcmp(value, "false"))
+			options.progress = 0;
+		else
+			return -1;
+		return 0;
+	}
+	else if (!strncmp(name, "followtags", namelen)) {
+		return 0;
+	} else if (!strncmp(name, "atomic", namelen)) {
+		if (!strcmp(value, "true"))
+			options.atomic = 1;
+		else if (!strcmp(value, "false"))
+			options.atomic = 0;
+		else
+			return -1;
+		return 0;
+	} else {
+		return 1 /* unsupported */;
+	}
+}
+
+int getverbosity(void)
+{
+	return options.verbosity;
+}
+
+int getprogress(void)
+{
+	return options.progress;
+}
+
+int getatomic(void)
+{
+	return options.atomic;
+}
 
 static unsigned char key[48];
 

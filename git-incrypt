@@ -44,6 +44,7 @@ plugin.decryptdata.argtypes = [
     ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 plugin.encryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 plugin.decryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+plugin.set_option.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p]
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -144,12 +145,7 @@ class CryptRepo:
 
     def __init__(self, clearname, url, init=None, forcetrust=False):
         assert clearname, 'This does not work yet outside a git repository'
-        self.settings = {
-            'atomic': False,
-            'progress': True,
-            'verbosity': 1,
-            'followtags': False
-        }
+        plugin.globalinit()
         hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
         self.prefix = f'refs/incrypt/{hashstr}/'
         self.url = url
@@ -195,7 +191,7 @@ class CryptRepo:
         'iterate over iterable and show progress'
         def update():
             'update progress'
-            if self.settings['progress'] and total:
+            if plugin.getprogress() and total:
                 nonlocal progress
                 progress += 1
                 sys.stderr.write(f'\rremote: {what}'
@@ -208,7 +204,7 @@ class CryptRepo:
             update()
             function(i)
         update()
-        if self.settings['progress'] and total:
+        if plugin.getprogress() and total:
             sys.stderr.write(', done.\n')
             sys.stderr.flush()
 
@@ -237,8 +233,8 @@ class CryptRepo:
     def _fetch(self, pattern):
         subprocess.run(
             ['git', 'fetch',
-             CryptRepo.verbosityflags[self.settings['verbosity']],
-             '--progress' if self.settings['progress'] else '--no-progress',
+             CryptRepo.verbosityflags[plugin.getverbosity()],
+             '--progress' if plugin.getprogress() else '--no-progress',
              '--no-write-fetch-head', '-p', self.url,
              f'+refs/heads/{pattern}:{self.prefix}1/{pattern}'],
             cwd=self.repo.path, check=True, stdout=sys.stderr)
@@ -377,16 +373,16 @@ class CryptRepo:
         resdict = {}
         for line in subprocess.run(
                 ['git', 'push'] +
-                ([CryptRepo.verbosityflags[self.settings['verbosity']]]
-                 if self.settings['verbosity'] > 1 else []) +
-                ['--progress' if self.settings['progress']
+                ([CryptRepo.verbosityflags[plugin.getverbosity()]]
+                 if plugin.getverbosity() > 1 else []) +
+                ['--progress' if plugin.getprogress()
                     else '--no-progress', '--porcelain'] +
-                (['--atomic'] if self.settings['atomic'] else []) +
+                (['--atomic'] if plugin.getatomic() else []) +
                 [self.url, '+' + self.prefix + '1/_:' + MetaData.REFNAME] +
                 [r[3] for r in xrefs],
                 cwd=self.repo.path, check=False, text=True,
                 stdout=subprocess.PIPE,
-                stderr=sys.stderr if self.settings['verbosity'] > 1
+                stderr=sys.stderr if plugin.getverbosity() > 1
                 else subprocess.DEVNULL
                 ).stdout.split('\n'):
             e = line.split('\t', 2)
@@ -442,10 +438,7 @@ def remotehelperloop():
         elif command[0] == 'push':
             pushcommand(line)
         elif command[0] == 'option':
-            if command[1] in ['atomic', 'progress', 'verbosity', 'followtags']:
-                crypt.settings[command[1]] = command[2] == 'true' \
-                    if isinstance(crypt.settings[command[1]], bool) \
-                    else int(command[2])
+            if plugin.set_option(command[1].encode('utf-8'), len(command[1].encode('utf-8')), command[2].encode('utf-8')):
                 sys.stdout.write('ok\n')
             else:
                 sys.stdout.write('unsupported\n')
