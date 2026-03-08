@@ -1,4 +1,4 @@
 [submodule "git"]
 	path = git
-	url = ../../git/git.git
+	url = ../git.git
 	ignore = untracked
