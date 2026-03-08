@@ -44,7 +44,8 @@ plugin.decryptdata.argtypes = [
     ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 plugin.encryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 plugin.decryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-plugin.set_option.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p]
+plugin.set_option.argtypes = [ctypes.c_char_p, ctypes.c_size_t,
+                              ctypes.c_char_p]
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -438,7 +439,9 @@ def remotehelperloop():
         elif command[0] == 'push':
             pushcommand(line)
         elif command[0] == 'option':
-            if plugin.set_option(command[1].encode('utf-8'), len(command[1].encode('utf-8')), command[2].encode('utf-8')):
+            if plugin.set_option(command[1].encode('utf-8'),
+                                 len(command[1].encode('utf-8')),
+                                 command[2].encode('utf-8')):
                 sys.stdout.write('ok\n')
             else:
                 sys.stdout.write('unsupported\n')
