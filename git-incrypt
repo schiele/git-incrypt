@@ -26,7 +26,6 @@ import tempfile
 import os
 import sys
 import re
-import hashlib
 import argparse
 import enum
 import ctypes
@@ -46,6 +45,9 @@ plugin.encryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 plugin.decryptrefname.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 plugin.set_option.argtypes = [ctypes.c_char_p, ctypes.c_size_t,
                               ctypes.c_char_p]
+plugin.hashdata.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+plugin.hashdatahex.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+plugin.hashdatahex.restype = ctypes.c_char_p
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -118,6 +120,19 @@ def decryptrefname(ref, key):
     return output.value.decode('utf-8')
 
 
+def sha1(data):
+    'sha1 hash of data'
+    output = ctypes.create_string_buffer(20)
+    poutput = ctypes.c_void_p(ctypes.addressof(output))
+    plugin.hashdata(data, len(data), poutput)
+    return output.raw[:20]
+
+
+def sha1hex(data):
+    'sha1 hash of data'
+    return plugin.hashdatahex(data, len(data)).decode('utf-8')
+
+
 # pylint: disable=pointless-string-statement
 '''
 mykey = b'x123456789abcdefy123456789abcdefz123456789abcdef'
@@ -135,7 +150,6 @@ plugin.decryptrefname(('refs/heads/' + encoded).encode('utf-8'), poutput)
 print(output.value)
 plugin.decryptrefname(encoded.encode('utf-8'), poutput)
 print(output.value)
-
 sys.exit(0)
 '''
 
@@ -147,8 +161,7 @@ class CryptRepo:
     def __init__(self, clearname, url, init=None, forcetrust=False):
         assert clearname, 'This does not work yet outside a git repository'
         plugin.globalinit()
-        hashstr = hashlib.sha1(url.encode('utf-8')).hexdigest()
-        self.prefix = f'refs/incrypt/{hashstr}/'
+        self.prefix = f'refs/incrypt/{sha1hex(url.encode("utf-8"))}/'
         self.url = url
         if init:
             self.repo = pygit2.init_repository(clearname, bare=True)
@@ -479,18 +492,18 @@ class MetaData:
         self.files['ver'] = self.repo.create_blob(MetaData.VER)
         self.key = os.urandom(48)
         keyhashbase = MetaData.KEYVER + b'\x00' + self.key
-        self.keyhash = hashlib.sha1(keyhashbase).hexdigest()
+        self.keyhash = sha1hex(keyhashbase)
         cryptedkey = self._gpg(
             ['-q', '-e'] + ['-r' + k for k in gpgkeys], keyhashbase)
         self.files['key'] = self.repo.create_blob(cryptedkey)
         self.files['sig'] = self.repo.TreeBuilder().write()
         self.template = template
         self.files['msg'] = self.repo.create_blob(encryptdata(
-            hashlib.sha1(template).digest() + template, self.key))
+            sha1(template) + template, self.key))
         self.defaultbranch = defaultbranch
         encodedbranch = defaultbranch.encode('utf-8')
         self.files['def'] = self.repo.create_blob(encryptdata(
-            hashlib.sha1(encodedbranch).digest() + encodedbranch, self.key))
+            sha1(encodedbranch) + encodedbranch, self.key))
         self.write()
         return self
 
@@ -514,7 +527,7 @@ class MetaData:
         obj = tree['key']
         self.files['key'] = obj.id
         data = self._gpg(['-q', '-d'], obj.read_raw())
-        newkeyhash = hashlib.sha1(data).hexdigest()
+        newkeyhash = sha1hex(data)
         if self.keyhash:
             assert newkeyhash == self.keyhash, \
                 f'Key hash is {newkeyhash}, was {self.keyhash}'
@@ -532,14 +545,13 @@ class MetaData:
         obj = tree['msg']
         self.files['msg'] = obj.id
         data = decryptdata(obj.read_raw(), self.key)
-        assert hashlib.sha1(data[20:]).digest() == \
-            data[0:20], 'corrupted template'
+        assert sha1(data[20:]) == data[0:20], 'corrupted template'
         self.template = data[20:]
         obj = tree['def']
         self.files['def'] = obj.id
         data = decryptdata(obj.read_raw(), self.key)
-        assert hashlib.sha1(data[20:]).digest() == \
-            data[0:20], 'corrupted default branch information'
+        assert sha1(data[20:]) == data[0:20], \
+            'corrupted default branch information'
         self.defaultbranch = data[20:].decode('utf-8')
         return self
 
@@ -547,7 +559,7 @@ class MetaData:
         'sign key'
         sig = self._gpg(['-q', '-b', '-s'], self.key)
         sigfile = self.repo.create_blob(encryptdata(
-            hashlib.sha1(sig).digest() + sig, self.key))
+            sha1(sig) + sig, self.key))
         sigtree = self.repo.TreeBuilder(self.repo.get(self.files['sig']))
         sigtree.insert(str(sigfile), sigfile, pygit2.enums.FileMode.BLOB)
         self.files['sig'] = sigtree.write()
@@ -557,8 +569,8 @@ class MetaData:
         trusted = False
         for sig in self.repo.get(self.files['sig']):
             decrypted = decryptdata(sig.read_raw(), self.key)
-            assert hashlib.sha1(decrypted[20:]).digest() == \
-                decrypted[0:20], 'corrupted signature'
+            assert sha1(decrypted[20:]) == decrypted[0:20], \
+                'corrupted signature'
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                 tmp.write(decrypted[20:])
                 tmp.flush()
@@ -596,7 +608,7 @@ class MetaData:
         for a, b in cryptmap.items():
             rawdata += bytes.fromhex(a) + bytes.fromhex(b)
         mapfile = self.repo.create_blob(encryptdata(
-            hashlib.sha1(rawdata).digest() + rawdata, self.key))
+            sha1(rawdata) + rawdata, self.key))
         collector.insert('map', mapfile, pygit2.enums.FileMode.BLOB)
         readmefile = self.repo.create_blob(CRYPTREADME.encode('utf-8'))
         collector.insert('README.md', readmefile, pygit2.enums.FileMode.BLOB)

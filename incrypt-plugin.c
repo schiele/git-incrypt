@@ -6,8 +6,11 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 
+//#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "hash.h"
+#include "hex.h"
 
 void globalinit(void);
 int set_option(const char *name, size_t namelen, const char *value);
@@ -21,6 +24,9 @@ unsigned char* decryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
 char* encryptrefname(const char* input, char* output);
 char* decryptrefname(const char* input, char* output);
+unsigned char* hashdata(const unsigned char* input, size_t inputlen,
+			unsigned char* output);
+char* hashdatahex(const unsigned char* input, size_t inputlen);
 
 struct options {
 	int verbosity;
@@ -272,6 +278,21 @@ char* decryptrefname(const char* input, char* output) {
 	memcpy(output, buf2 + hashlen, outlen2 - hashlen);
 	output[outlen2 - hashlen] = '\0';
 	return output;
+}
+
+unsigned char* hashdata(const unsigned char* input, size_t inputlen,
+			unsigned char* output) {
+	struct git_hash_ctx c;
+	hash_algos[GIT_HASH_SHA1].init_fn(&c);
+	git_hash_update(&c, input, inputlen);
+	git_hash_final(output, &c);
+	return output;
+}
+
+char* hashdatahex(const unsigned char* input, size_t inputlen) {
+	unsigned char hash[GIT_SHA1_RAWSZ];
+	hashdata(input, inputlen, hash);
+	return hash_to_hex_algop(hash, &hash_algos[GIT_HASH_SHA1]);
 }
 
 int cmd_main(int argc, const char** argv) {
