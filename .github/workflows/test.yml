@@ -19,7 +19,7 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y asciidoc python3-pygit2 python3-pip
+          sudo apt-get install -y asciidoc python3-pygit2 python3-pip libcurl4-openssl-dev
       - name: Install system dependencies (MacOS)
         if: startsWith(matrix.os, 'macos')
         run : |
