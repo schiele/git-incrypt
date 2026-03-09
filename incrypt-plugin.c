@@ -12,11 +12,12 @@
 #include "hash.h"
 #include "hex.h"
 
-void globalinit(void);
+void globalinit(const char* url_arg);
 int set_option(const char *name, size_t namelen, const char *value);
 int getverbosity(void);
 int getprogress(void);
 int getatomic(void);
+const char* geturl(void);
 void setcryptkey(const unsigned char* k);
 unsigned char* encryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
@@ -35,10 +36,15 @@ struct options {
 };
 static struct options options;
 
-void globalinit(void) {
+static char* url = NULL;
+
+void globalinit(const char* url_arg) {
+	size_t urllen = strlen(url_arg);
 	options.verbosity = 1;
 	options.progress = !!isatty(2);
 	options.atomic = 0;
+	url = malloc(urllen + 1);
+	memcpy(url, url_arg, urllen + 1);
 }
 
 /*static*/ int set_option(const char *name, size_t namelen, const char *value)
@@ -88,6 +94,10 @@ int getprogress(void)
 int getatomic(void)
 {
 	return options.atomic;
+}
+
+const char* geturl(void) {
+	return url;
 }
 
 static unsigned char key[48];
