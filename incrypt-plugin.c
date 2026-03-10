@@ -18,6 +18,7 @@ int getverbosity(void);
 int getprogress(void);
 int getatomic(void);
 const char* geturl(void);
+const char* getprefix(void);
 void setcryptkey(const unsigned char* k);
 unsigned char* encryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
@@ -27,7 +28,14 @@ char* encryptrefname(const char* input, char* output);
 char* decryptrefname(const char* input, char* output);
 unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 			unsigned char* output);
-char* hashdatahex(const unsigned char* input, size_t inputlen);
+char* hashdatahex(const unsigned char* input, size_t inputlen,
+		  char* output);
+
+/*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
+"This is an encrypted git repository.  You can clone it, but you will not be\n"
+"able to see the contents of the commits.  If you have the right key, you can\n"
+"decrypt the repository using\n"
+"[git-incrypt](https://github.com/schiele/git-incrypt).\n";
 
 struct options {
 	int verbosity;
@@ -37,6 +45,7 @@ struct options {
 static struct options options;
 
 static char* url = NULL;
+static char prefix[] = "refs/incrypt/......................................../";
 
 void globalinit(const char* url_arg) {
 	size_t urllen = strlen(url_arg);
@@ -45,6 +54,8 @@ void globalinit(const char* url_arg) {
 	options.atomic = 0;
 	url = malloc(urllen + 1);
 	memcpy(url, url_arg, urllen + 1);
+	hashdatahex((const unsigned char*)url, urllen, prefix + 13);
+	prefix[13 + GIT_SHA1_HEXSZ] = '/';
 }
 
 /*static*/ int set_option(const char *name, size_t namelen, const char *value)
@@ -98,6 +109,10 @@ int getatomic(void)
 
 const char* geturl(void) {
 	return url;
+}
+
+const char* getprefix(void) {
+	return prefix;
 }
 
 static unsigned char key[48];
@@ -299,10 +314,10 @@ unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 	return output;
 }
 
-char* hashdatahex(const unsigned char* input, size_t inputlen) {
+char* hashdatahex(const unsigned char* input, size_t inputlen, char* output) {
 	unsigned char hash[GIT_SHA1_RAWSZ];
 	hashdata(input, inputlen, hash);
-	return hash_to_hex_algop(hash, &hash_algos[GIT_HASH_SHA1]);
+	return hash_to_hex_algop_r(output, hash, &hash_algos[GIT_HASH_SHA1]);
 }
 
 int cmd_main(int argc, const char** argv) {
