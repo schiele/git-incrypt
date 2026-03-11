@@ -28,7 +28,7 @@ incrypt-plugin.so: git/incrypt-plugin.so
 	cp $< $@
 
 git/incrypt-plugin.so: git/incrypt-plugin.c git/config.mak
-	$(MAKE) -C $(@D) DEVELOPER:=1 $(@F)
+	$(MAKE) -C $(@D) prefix:=/usr DEVELOPER:=1 $(@F)
 
 git/%.c: %.c
 	cp $< $@
@@ -38,7 +38,7 @@ man1/%.1: git/Documentation/%.1
 	cp $< $@
 
 git/Documentation/%.1: git/Documentation/%.adoc git/config.mak
-	$(MAKE) -C $(@D) DEVELOPER:=1 $(@F)
+	$(MAKE) -C $(@D) prefix:=/usr DEVELOPER:=1 $(@F)
 
 git/Documentation/%.adoc: %.adoc
 	cp $< $@

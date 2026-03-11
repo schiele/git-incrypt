@@ -11,8 +11,10 @@
 #include "git-compat-util.h"
 #include "hash.h"
 #include "hex.h"
+#include "setup.h"
+#include "ident.h"
 
-void globalinit(const char* url_arg);
+void globalinit(const char* dir, const char* url_arg);
 int set_option(const char *name, size_t namelen, const char *value);
 int getverbosity(void);
 int getprogress(void);
@@ -30,6 +32,8 @@ unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 			unsigned char* output);
 char* hashdatahex(const unsigned char* input, size_t inputlen,
 		  char* output);
+void initbare(const char* dir);
+char* mktemplate(const char* name, const char* email, const char* date, const char* msg, char* output);
 
 /*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
 "This is an encrypted git repository.  You can clone it, but you will not be\n"
@@ -47,8 +51,9 @@ static struct options options;
 static char* url = NULL;
 static char prefix[] = "refs/incrypt/......................................../";
 
-void globalinit(const char* url_arg) {
+void globalinit(const char* dir, const char* url_arg) {
 	size_t urllen = strlen(url_arg);
+	chdir(dir);
 	options.verbosity = 1;
 	options.progress = !!isatty(2);
 	options.atomic = 0;
@@ -318,6 +323,28 @@ char* hashdatahex(const unsigned char* input, size_t inputlen, char* output) {
 	unsigned char hash[GIT_SHA1_RAWSZ];
 	hashdata(input, inputlen, hash);
 	return hash_to_hex_algop_r(output, hash, &hash_algos[GIT_HASH_SHA1]);
+}
+
+void initbare(const char* dir) {
+	init_db(dir, NULL, NULL, GIT_HASH_UNKNOWN, REF_STORAGE_FORMAT_UNKNOWN, NULL, -1, 0);
+}
+
+char* mktemplate(const char* name, const char* email, const char* date, const char* msg, char* output) {
+	struct object_id ret;
+	int res;
+        if (!msg)
+		msg = "Encrypted by git-incrypt.\n\n"
+                      "https://github.com/schiele/git-incrypt\n";
+	res = commit_tree_extended(msg, strlen(msg),
+		hash_algos[GIT_HASH_SHA1].empty_tree,
+                NULL, &ret,
+		fmt_ident(name?name:getenv("GIT_AUTHOR_NAME"), email?email:getenv("GIT_AUTHOR_EMAIL"), WANT_AUTHOR_IDENT, date?date:getenv("GIT_AUTHOR_DATE"), 0),
+		fmt_ident(name?name:getenv("GIT_COMMITTER_NAME"), email?email:getenv("GIT_COMMITTER_EMAIL"), WANT_COMMITTER_IDENT, date?date:getenv("GIT_COMMITTER_DATE"), 0),
+                NULL, NULL);
+	if (res != 0)
+		return NULL;
+	memcpy(output, oid_to_hex(&ret), 41);
+	return output;
 }
 
 int cmd_main(int argc, const char** argv) {

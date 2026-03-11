@@ -48,9 +48,15 @@ plugin.set_option.argtypes = [ctypes.c_char_p, ctypes.c_size_t,
 plugin.geturl.restype = ctypes.c_char_p
 plugin.getprefix.restype = ctypes.c_char_p
 plugin.hashdata.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
-plugin.hashdatahex.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+plugin.hashdatahex.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                               ctypes.c_char_p]
 plugin.hashdatahex.restype = ctypes.c_char_p
-plugin.globalinit.argtypes = [ctypes.c_char_p]
+plugin.globalinit.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+plugin.initbare.argtypes = [ctypes.c_char_p]
+plugin.mktemplate.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
+                              ctypes.c_char_p, ctypes.c_char_p,
+                              ctypes.c_char_p]
+plugin.mktemplate.restype = ctypes.c_char_p
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -157,43 +163,29 @@ class CryptRepo:
 
     def __init__(self, clearname, url, init=None, forcetrust=False):
         assert clearname, 'This does not work yet outside a git repository'
-        plugin.globalinit(url.encode('utf-8'))
+        plugin.globalinit(clearname.encode('utf-8'), url.encode('utf-8'))
         if init:
-            self.repo = pygit2.init_repository(clearname, bare=True)
-            template = self._mktemplate(init.name, init.email,
-                                        init.date, init.m)
+            plugin.initbare(clearname.encode('utf-8'))
+            output = ctypes.create_string_buffer(41)
+            poutput = ctypes.c_char_p(ctypes.addressof(output))
+            plugin.mktemplate(
+                init.name.encode('utf-8') if init.name else None,
+                init.email.encode('utf-8') if init.email else None,
+                init.date.encode('utf-8') if init.date else None,
+                '\n\n'.join(init.m).encode('utf-8') if init.m else None,
+                poutput)
+            self.repo = pygit2.Repository('.')
+            template = self.repo.get(
+                output.value.decode('utf-8')).read_raw().split(b'\n', 1)[1]
             self.meta = MetaData(self.repo).init(
                 init.keys, template, 'refs/heads/master')
             self.trust(force=True, sign=True)
         else:
-            self.repo = pygit2.Repository(clearname)
+            self.repo = pygit2.Repository('.')
             self._fetch('_')
             self.meta = MetaData(self.repo).read()
             if forcetrust:
                 self.trust(force=forcetrust)
-
-    def _mktemplate(self, name, email, date, messages):
-        'create a template commit'
-        if not messages:
-            messages = ['Encrypted by git-incrypt.',
-                        'https://github.com/schiele/git-incrypt']
-        env = os.environ.copy()
-        if name:
-            env['GIT_AUTHOR_NAME'] = name
-            env['GIT_COMMITTER_NAME'] = name
-        if email:
-            env['GIT_AUTHOR_EMAIL'] = email
-            env['GIT_COMMITTER_EMAIL'] = email
-        if date:
-            env['GIT_AUTHOR_DATE'] = date
-            env['GIT_COMMITTER_DATE'] = date
-        templateid = subprocess.check_output(
-            ['git', 'commit-tree'] +
-            [x for m in messages for x in ('-m', m)] +
-            ['4b825dc642cb6eb9a060e54bf8d69288fbee4904'],
-            cwd=self.repo.path, env=env).decode('utf-8').strip()
-        template = self.repo.get(templateid).read_raw().split(b'\n', 1)[1]
-        return template
 
     def _progress_for(self, what, iterable, function):
         'iterate over iterable and show progress'
@@ -244,7 +236,8 @@ class CryptRepo:
              CryptRepo.verbosityflags[plugin.getverbosity()],
              '--progress' if plugin.getprogress() else '--no-progress',
              '--no-write-fetch-head', '-p', plugin.geturl().decode('utf-8'),
-             f'+refs/heads/{pattern}:{plugin.getprefix().decode("utf-8")}1/{pattern}'],
+             f'+refs/heads/{pattern}:{
+                 plugin.getprefix().decode("utf-8")}1/{pattern}'],
             cwd=self.repo.path, check=True, stdout=sys.stderr)
 
     def trust(self, force=False, sign=False):
@@ -289,8 +282,10 @@ class CryptRepo:
         refs = [[r[0], plugin.getprefix().decode('utf-8') + '0/' + r[0],
                  self.repo.revparse_single(r[1])]
                 for r in [[decryptrefname(r, self.meta.key), r] for r in
-                          filter(lambda r: len(r) > len(plugin.getprefix().decode('utf-8'))+3 and
-                                 r.startswith(plugin.getprefix().decode('utf-8') + '1/'),
+                          filter(lambda r: len(r) >
+                                 len(plugin.getprefix().decode('utf-8'))+3 and
+                                 r.startswith(plugin.getprefix().
+                                              decode('utf-8') + '1/'),
                                  self.repo.references)]]
         cryptmap = self.meta.readmap(reverse=True)
         self._progress_for(
@@ -307,8 +302,9 @@ class CryptRepo:
         for r in self.repo.references:
             if r.startswith(plugin.getprefix().decode('utf-8') + '0/'):
                 if r in expected:
-                    result.append([r[len(plugin.getprefix().decode('utf-8'))+2:],
-                                   self.repo.lookup_reference(r).target])
+                    result.append(
+                        [r[len(plugin.getprefix().decode('utf-8'))+2:],
+                            self.repo.lookup_reference(r).target])
                 else:
                     self.repo.references.delete(r)
         return result
@@ -353,7 +349,8 @@ class CryptRepo:
                 else [cryptmap[str(obj.target)]])
 
         xrefs = [[r[0], r[1], r[3], ('+' if r[2] else '') +
-                  (plugin.getprefix().decode('utf-8') + '1/' + r[3] if r[0] else '') +
+                  (plugin.getprefix().decode('utf-8') + '1/' +
+                   r[3] if r[0] else '') +
                   ':refs/heads/' + r[3],
                   self.repo.revparse_single(r[0]) if r[0] else None]
                  for r in [[r[0], r[1], r[2],
@@ -372,11 +369,12 @@ class CryptRepo:
         for r in xrefs:
             if r[4]:
                 self.repo.create_reference(
-                    plugin.getprefix().decode('utf-8') + '1/' + r[2], cryptmap[str(r[4].id)],
-                    force=True)
+                    plugin.getprefix().decode('utf-8') + '1/' + r[2],
+                    cryptmap[str(r[4].id)], force=True)
             else:
                 try:
-                    self.repo.references.delete(plugin.getprefix().decode('utf-8') + '1/' + r[2])
+                    self.repo.references.delete(
+                        plugin.getprefix().decode('utf-8') + '1/' + r[2])
                 except KeyError:
                     pass
         resdict = {}
@@ -388,7 +386,8 @@ class CryptRepo:
                     else '--no-progress', '--porcelain'] +
                 (['--atomic'] if plugin.getatomic() else []) +
                 [plugin.geturl().decode('utf-8'), '+' +
-                 plugin.getprefix().decode('utf-8') + '1/_:' + MetaData.REFNAME] +
+                 plugin.getprefix().decode('utf-8') + '1/_:' +
+                 MetaData.REFNAME] +
                 [r[3] for r in xrefs],
                 cwd=self.repo.path, check=False, text=True,
                 stdout=subprocess.PIPE,
@@ -512,7 +511,8 @@ class MetaData:
     def read(self):
         'read the metadata'
         self.files = {}
-        tree = self.repo.revparse_single(plugin.getprefix().decode('utf-8') + '1/_').tree
+        tree = self.repo.revparse_single(
+            plugin.getprefix().decode('utf-8') + '1/_').tree
         obj = tree['ver']
         self.files['ver'] = obj.id
         data = obj.read_raw()
@@ -604,16 +604,19 @@ class MetaData:
         mapfile = self.repo.create_blob(encryptdata(
             sha1(rawdata) + rawdata, self.key))
         collector.insert('map', mapfile, pygit2.enums.FileMode.BLOB)
-        readmefile = self.repo.create_blob(ctypes.c_char_p.in_dll(plugin, 'CRYPTREADME').value)
+        readmefile = self.repo.create_blob(
+            ctypes.c_char_p.in_dll(plugin, 'CRYPTREADME').value)
         collector.insert('README.md', readmefile, pygit2.enums.FileMode.BLOB)
         colid = collector.write()
         commit = self.secretcommit(colid, [])
-        self.repo.create_reference(plugin.getprefix().decode('utf-8') + '1/_', commit, force=True)
+        self.repo.create_reference(
+            plugin.getprefix().decode('utf-8') + '1/_', commit, force=True)
         return self
 
     def readmap(self, reverse=False):
         'read the mapping table'
-        tree = self.repo.revparse_single(plugin.getprefix().decode('utf-8') + '1/_').tree
+        tree = self.repo.revparse_single(
+            plugin.getprefix().decode('utf-8') + '1/_').tree
         o = 20 if reverse else 0
         processed = {}
         rawdata = decryptdata(tree['map'].read_raw(), self.key)
