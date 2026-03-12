@@ -57,6 +57,7 @@ plugin.mktemplate.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
                               ctypes.c_char_p, ctypes.c_char_p,
                               ctypes.c_char_p]
 plugin.mktemplate.restype = ctypes.c_char_p
+plugin.fetchpattern.argtypes = [ctypes.c_char]
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -182,7 +183,7 @@ class CryptRepo:
             self.trust(force=True, sign=True)
         else:
             self.repo = pygit2.Repository('.')
-            self._fetch('_')
+            plugin.fetchpattern('_'.encode('utf-8')[0])
             self.meta = MetaData(self.repo).read()
             if forcetrust:
                 self.trust(force=forcetrust)
@@ -230,16 +231,6 @@ class CryptRepo:
                 ([f'^{x}\n' for x in excl] if excl else [])))
         return text.strip().split('\n') if text else []
 
-    def _fetch(self, pattern):
-        subprocess.run(
-            ['git', 'fetch',
-             CryptRepo.verbosityflags[plugin.getverbosity()],
-             '--progress' if plugin.getprogress() else '--no-progress',
-             '--no-write-fetch-head', '-p', plugin.geturl().decode('utf-8'),
-             f'+refs/heads/{pattern}:{
-                 plugin.getprefix().decode("utf-8")}1/{pattern}'],
-            cwd=self.repo.path, check=True, stdout=sys.stderr)
-
     def trust(self, force=False, sign=False):
         'trust this repository'
         if force:
@@ -275,7 +266,7 @@ class CryptRepo:
             'decrypt an object'
             raw = decryptdata(self.repo.get(oid).read_raw(), self.meta.key)
             return self.repo.odb.write(raw[20], raw[21:])
-        self._fetch('*')
+        plugin.fetchpattern('*'.encode('utf-8')[0])
         self.meta.read()
         self.trust()
         # [ dec(crypt) , prefdec(crypt), crypt ]

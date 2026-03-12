@@ -13,6 +13,7 @@
 #include "hex.h"
 #include "setup.h"
 #include "ident.h"
+#include "run-command.h"
 
 void globalinit(const char* dir, const char* url_arg);
 int set_option(const char *name, size_t namelen, const char *value);
@@ -34,6 +35,7 @@ char* hashdatahex(const unsigned char* input, size_t inputlen,
 		  char* output);
 void initbare(const char* dir);
 char* mktemplate(const char* name, const char* email, const char* date, const char* msg, char* output);
+void fetchpattern(const char pattern);
 
 /*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
 "This is an encrypted git repository.  You can clone it, but you will not be\n"
@@ -345,6 +347,26 @@ char* mktemplate(const char* name, const char* email, const char* date, const ch
 		return NULL;
 	memcpy(output, oid_to_hex(&ret), 41);
 	return output;
+}
+
+static const char* verbosityflags[5] = {"-q", "-q", "-v", "-vv", "-vvv"};
+static const char* progressflags[2] = {"--no-progress", "--progress"};
+
+void fetchpattern(const char pattern) {
+	struct child_process cmd = CHILD_PROCESS_INIT;
+
+	char refspec[14+GIT_SHA1_HEXSZ+14+4];
+	memcpy(refspec, "+refs/heads/.:refs/incrypt/......................................../1/.", 14+GIT_SHA1_HEXSZ+14+4);
+	refspec[12] = refspec[70] = pattern;
+	memcpy(refspec + 14, prefix, GIT_SHA1_HEXSZ + 14);
+
+	strvec_pushl(&cmd.args, "fetch", verbosityflags[options.verbosity],
+		     progressflags[options.progress], "--no-write-fetch-head",
+		     "-p", url, refspec, NULL);
+
+	cmd.git_cmd = 1;
+	//This causes a crash! : cmd.close_object_store = 1;
+	/*return*/ run_command(&cmd);
 }
 
 int cmd_main(int argc, const char** argv) {
