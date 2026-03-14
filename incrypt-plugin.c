@@ -434,7 +434,16 @@ void metainit(void) {
 	free(defaultbranchencrypted);
 }
 
+static void secretcommit(struct object_id* tid, struct object_id* oid) {
+	struct strbuf commit = STRBUF_INIT;
+	strbuf_addf(&commit, "tree %s\n", oid_to_hex(tid));
+	strbuf_add(&commit, template.buf, template.len);
+	odb_write_object(the_repository->objects, commit.buf, commit.len, OBJ_COMMIT, oid);
+	strbuf_release(&commit);
+}
+
 char* writemeta(char* output) {
+	struct object_id oid;
 	struct object_id tid;
 	struct strbuf tb = STRBUF_INIT;
 	struct strbuf map = STRBUF_INIT;
@@ -467,7 +476,8 @@ char* writemeta(char* output) {
 	strbuf_add(&tb, obj_ver.hash, the_hash_algo->rawsz);
 	odb_write_object(the_repository->objects, tb.buf, tb.len, OBJ_TREE, &tid);
 	strbuf_release(&tb);
-	memcpy(output, oid_to_hex(&tid), 41);
+	secretcommit(&tid, &oid);
+	memcpy(output, oid_to_hex(&oid), 41);
 	return output;
 }
 

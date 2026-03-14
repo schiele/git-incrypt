@@ -144,19 +144,26 @@ class CryptRepo:
         plugin.globalinit(clearname.encode('utf-8'), url.encode('utf-8'))
         if init:
             plugin.initbare(clearname.encode('utf-8'))
-            template = plugin.mktemplate(
+            plugin.mktemplate(
                 init.name.encode('utf-8') if init.name else None,
                 init.email.encode('utf-8') if init.email else None,
                 init.date.encode('utf-8') if init.date else None,
                 '\n\n'.join(init.m).encode('utf-8') if init.m else None)
+            plugin.metainit()
+            # params: init.keys, 'refs/heads/master'
+            output = ctypes.create_string_buffer(41)
+            poutput = ctypes.c_char_p(ctypes.addressof(output))
+            plugin.writemeta(poutput)
             self.repo = pygit2.Repository('.')
-            self.meta = MetaData(self.repo).init(
-                init.keys, template, 'refs/heads/master')
+            blubs = self.repo.get(output.value.decode('utf-8')).id
+            self.repo.create_reference(
+                plugin.getprefix().decode('utf-8') + '1/_', blubs, force=True)
+            self.meta = MetaData(self.repo)
             self.trust(force=True, sign=True)
         else:
             self.repo = pygit2.Repository('.')
             plugin.fetchpattern('_'.encode('utf-8')[0])
-            self.meta = MetaData(self.repo).read()
+            self.meta = MetaData(self.repo)
             if forcetrust:
                 self.trust(force=forcetrust)
 
@@ -257,8 +264,8 @@ class CryptRepo:
                                cryptmap, cwd=self.repo.path),
             decryptobject)
         for r in refs:
-            self.repo.create_reference(
-                r[1], decryptdata(r[2].tree['0'].read_raw())[0:20].hex(), force=True)
+            self.repo.create_reference(r[1], decryptdata(
+                r[2].tree['0'].read_raw())[0:20].hex(), force=True)
         expected = [r[1] for r in refs]
         result = [['HEAD', f'@{self.meta.defaultbranch}']]
         for r in self.repo.references:
@@ -434,41 +441,13 @@ class MetaData:
         self.template = None
         self.defaultbranch = None
         self.gpgkeys = []
+        self.read()
 
     def _gpg(self, args, inp):
         'run gpg'
         return subprocess.check_output(
                 [f'gpg@incrypt::{plugin.geturl().decode("utf-8")}'] + args,
                 executable='gpg', input=inp)
-
-    def init(self, gpgkeys, template, defaultbranch):
-        'initialize the metadata'
-        self.files = {}
-        plugin.metainit()
-        output = ctypes.create_string_buffer(41)
-        poutput = ctypes.c_char_p(ctypes.addressof(output))
-        plugin.writemeta(poutput)
-        blubs = self.repo.get(output.value.decode('utf-8')).id
-        self.files['ver'] = self.repo.create_blob(MetaData.VER)
-        self.key = ctypes.string_at(plugin.getcryptkey(), 48) # os.urandom(48)
-        keyhashbase = MetaData.KEYVER + b'\x00' + self.key
-        self.keyhash = sha1hex(keyhashbase)
-        cryptedkey = self._gpg(
-            ['-q', '-e'] + ['-r' + k for k in gpgkeys], keyhashbase)
-        self.files['key'] = self.repo.create_blob(cryptedkey)
-        self.files['sig'] = self.repo.TreeBuilder().write()
-        self.template = template
-        self.files['msg'] = self.repo.create_blob(encryptdata(
-            sha1(template) + template))
-        self.defaultbranch = defaultbranch
-        encodedbranch = defaultbranch.encode('utf-8')
-        self.files['def'] = self.repo.create_blob(encryptdata(
-            sha1(encodedbranch) + encodedbranch))
-        # self.write()
-        commit = self.secretcommit(blubs, [])
-        self.repo.create_reference(
-            plugin.getprefix().decode('utf-8') + '1/_', commit, force=True)
-        return self
 
     def addkey(self, gpgkeys):
         'add gpg key'
