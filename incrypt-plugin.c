@@ -20,6 +20,8 @@
 #include "strbuf.h"
 #include "sigchain.h"
 #include "gettext.h"
+//#include "config.h"
+//#include "environment.h"
 
 void globalinit(const char* dir, const char* url_arg);
 int set_option(const char *name, size_t namelen, const char *value);
@@ -48,6 +50,7 @@ void metainit(void);
 char* writemeta(char* output);
 int encrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
 		       struct string_list *recipients);
+void myupdaterefs(const char* refname, const char* oid);
 
 /*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
 "This is an encrypted git repository.  You can clone it, but you will not be\n"
@@ -385,6 +388,14 @@ void fetchpattern(const char pattern) {
 	/*return*/ run_command(&cmd);
 }
 
+void myupdaterefs(const char* refname, const char* oid) {
+	struct child_process cmd = CHILD_PROCESS_INIT;
+	strvec_pushl(&cmd.args, "update-ref", refname, oid, NULL);
+	cmd.git_cmd = 1;
+	//This causes a crash! : cmd.close_object_store = 1;
+	/*return*/ run_command(&cmd);
+}
+
 const char* ver = "git-incrypt\n1.0.0\n";
 const char* keyver = "AES-256-CBC+IV";
 struct object_id obj_ver;
@@ -452,6 +463,7 @@ char* writemeta(char* output) {
 	size_t mapencryptedlen = 0;
 	struct object_id obj_readme;
 	struct object_id obj_map;
+	struct strbuf refname = STRBUF_INIT;
         odb_write_object(the_repository->objects, CRYPTREADME, strlen(CRYPTREADME), OBJ_BLOB, &obj_readme);
 	strbuf_addf(&tb, "%o %s%c", 0100644, "README.md", '\0');
 	strbuf_add(&tb, obj_readme.hash, the_hash_algo->rawsz);
@@ -477,6 +489,11 @@ char* writemeta(char* output) {
 	odb_write_object(the_repository->objects, tb.buf, tb.len, OBJ_TREE, &tid);
 	strbuf_release(&tb);
 	secretcommit(&tid, &oid);
+	strbuf_addf(&refname, "%s1/_", prefix);
+	// refs_update_ref(get_main_ref_store(the_repository), NULL, refname.buf,
+	//		&oid, NULL, 0, UPDATE_REFS_MSG_ON_ERR);
+	myupdaterefs(refname.buf, oid_to_hex(&oid));
+	strbuf_release(&refname);
 	memcpy(output, oid_to_hex(&oid), 41);
 	return output;
 }

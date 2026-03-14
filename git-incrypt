@@ -155,9 +155,6 @@ class CryptRepo:
             poutput = ctypes.c_char_p(ctypes.addressof(output))
             plugin.writemeta(poutput)
             self.repo = pygit2.Repository('.')
-            blubs = self.repo.get(output.value.decode('utf-8')).id
-            self.repo.create_reference(
-                plugin.getprefix().decode('utf-8') + '1/_', blubs, force=True)
             self.meta = MetaData(self.repo)
             self.trust(force=True, sign=True)
         else:
