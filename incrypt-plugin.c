@@ -6,7 +6,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 
-//#define USE_THE_REPOSITORY_VARIABLE
+#define USE_THE_REPOSITORY_VARIABLE
 
 #include "git-compat-util.h"
 #include "hash.h"
@@ -14,6 +14,12 @@
 #include "setup.h"
 #include "ident.h"
 #include "run-command.h"
+#include "odb.h"
+//#include "read-cache-ll.h"
+//#include "cache-tree.h"
+#include "strbuf.h"
+#include "sigchain.h"
+#include "gettext.h"
 
 void globalinit(const char* dir, const char* url_arg);
 int set_option(const char *name, size_t namelen, const char *value);
@@ -23,6 +29,7 @@ int getatomic(void);
 const char* geturl(void);
 const char* getprefix(void);
 void setcryptkey(const unsigned char* k);
+const unsigned char* getcryptkey(void);
 unsigned char* encryptdata(const unsigned char* input, size_t inputlen,
 			   unsigned char* output, size_t* outputlen);
 unsigned char* decryptdata(const unsigned char* input, size_t inputlen,
@@ -33,9 +40,14 @@ unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 			unsigned char* output);
 char* hashdatahex(const unsigned char* input, size_t inputlen,
 		  char* output);
+void hashdatabuf(struct strbuf* out, struct strbuf* in);
 void initbare(const char* dir);
-char* mktemplate(const char* name, const char* email, const char* date, const char* msg, char* output);
+char* mktemplate(const char* name, const char* email, const char* date, const char* msg);
 void fetchpattern(const char pattern);
+void metainit(void);
+char* writemeta(char* output);
+int encrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
+		       struct string_list *recipients);
 
 /*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
 "This is an encrypted git repository.  You can clone it, but you will not be\n"
@@ -126,6 +138,10 @@ static unsigned char key[48];
 
 void setcryptkey(const unsigned char* k) {
 	memcpy(key, k, 48);
+}
+
+const unsigned char* getcryptkey(void) {
+	return key;
 }
 
 static void handle_openssl_error(const char *message) {
@@ -327,26 +343,26 @@ char* hashdatahex(const unsigned char* input, size_t inputlen, char* output) {
 	return hash_to_hex_algop_r(output, hash, &hash_algos[GIT_HASH_SHA1]);
 }
 
+void hashdatabuf(struct strbuf* out, struct strbuf* in) {
+	unsigned char hash[GIT_SHA1_RAWSZ];
+	hashdata((const unsigned char*)in->buf, in->len, hash);
+	strbuf_add(out, hash, GIT_SHA1_RAWSZ);
+}
+
 void initbare(const char* dir) {
 	init_db(dir, NULL, NULL, GIT_HASH_UNKNOWN, REF_STORAGE_FORMAT_UNKNOWN, NULL, -1, 0);
 }
 
-char* mktemplate(const char* name, const char* email, const char* date, const char* msg, char* output) {
-	struct object_id ret;
-	int res;
+struct strbuf template = STRBUF_INIT;
+
+char* mktemplate(const char* name, const char* email, const char* date, const char* msg) {
         if (!msg)
 		msg = "Encrypted by git-incrypt.\n\n"
                       "https://github.com/schiele/git-incrypt\n";
-	res = commit_tree_extended(msg, strlen(msg),
-		hash_algos[GIT_HASH_SHA1].empty_tree,
-                NULL, &ret,
-		fmt_ident(name?name:getenv("GIT_AUTHOR_NAME"), email?email:getenv("GIT_AUTHOR_EMAIL"), WANT_AUTHOR_IDENT, date?date:getenv("GIT_AUTHOR_DATE"), 0),
-		fmt_ident(name?name:getenv("GIT_COMMITTER_NAME"), email?email:getenv("GIT_COMMITTER_EMAIL"), WANT_COMMITTER_IDENT, date?date:getenv("GIT_COMMITTER_DATE"), 0),
-                NULL, NULL);
-	if (res != 0)
-		return NULL;
-	memcpy(output, oid_to_hex(&ret), 41);
-	return output;
+	strbuf_addf(&template, "author %s\n", fmt_ident(name?name:getenv("GIT_AUTHOR_NAME"), email?email:getenv("GIT_AUTHOR_EMAIL"), WANT_AUTHOR_IDENT, date?date:getenv("GIT_AUTHOR_DATE"), 0));
+	strbuf_addf(&template, "committer %s\n\n", fmt_ident(name?name:getenv("GIT_COMMITTER_NAME"), email?email:getenv("GIT_COMMITTER_EMAIL"), WANT_COMMITTER_IDENT, date?date:getenv("GIT_COMMITTER_DATE"), 0));
+	strbuf_add(&template, msg, strlen(msg));
+	return template.buf;
 }
 
 static const char* verbosityflags[5] = {"-q", "-q", "-v", "-vv", "-vvv"};
@@ -367,6 +383,131 @@ void fetchpattern(const char pattern) {
 	cmd.git_cmd = 1;
 	//This causes a crash! : cmd.close_object_store = 1;
 	/*return*/ run_command(&cmd);
+}
+
+const char* ver = "git-incrypt\n1.0.0\n";
+const char* keyver = "AES-256-CBC+IV";
+struct object_id obj_ver;
+struct object_id obj_key;
+struct object_id obj_sig;
+struct object_id obj_msg;
+struct object_id obj_def;
+
+void metainit(void) {
+	struct strbuf keybuf = STRBUF_INIT;
+	struct strbuf output_buf = STRBUF_INIT;
+	//char* key[48];
+	struct string_list recipients = STRING_LIST_INIT_NODUP;
+	struct strbuf templateprefixed = STRBUF_INIT;
+	unsigned char* templateencrypted = NULL;
+	size_t templateencryptedlen = 0;
+	struct strbuf defaultbranch = STRBUF_INIT;
+	struct strbuf defaultbranchprefixed = STRBUF_INIT;
+	unsigned char* defaultbranchencrypted = NULL;
+	size_t defaultbranchencryptedlen = 0;
+        odb_write_object(the_repository->objects, ver, strlen(ver), OBJ_BLOB, &obj_ver);
+	strbuf_add(&keybuf, keyver, 15);
+	getrandom(key, 48, 0);
+	strbuf_add(&keybuf, key, 48);
+	/* This hard coded value needs to be replaced later! */
+	string_list_append(&recipients, "5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7");
+	if (encrypt_buffer_gpg(&keybuf, &output_buf, &recipients) < 0)
+    		die("Encryption failed");
+	strbuf_release(&keybuf);
+	odb_write_object(the_repository->objects, output_buf.buf, output_buf.len, OBJ_BLOB, &obj_key);
+	strbuf_release(&output_buf);
+	odb_write_object(the_repository->objects, NULL, 0, OBJ_TREE, &obj_sig);
+	hashdatabuf(&templateprefixed, &template);
+	strbuf_add(&templateprefixed, template.buf, template.len);
+	templateencrypted = malloc(templateprefixed.len+16);
+	encryptdata((const unsigned char*)templateprefixed.buf, templateprefixed.len, templateencrypted, &templateencryptedlen);
+	odb_write_object(the_repository->objects, templateencrypted, templateencryptedlen, OBJ_BLOB, &obj_msg);
+	strbuf_release(&templateprefixed);
+	free(templateencrypted);
+	strbuf_addf(&defaultbranch, "refs/heads/%s", "master");
+	hashdatabuf(&defaultbranchprefixed, &defaultbranch);
+	strbuf_add(&defaultbranchprefixed, defaultbranch.buf, defaultbranch.len);
+	defaultbranchencrypted = malloc(defaultbranchprefixed.len+16);
+	encryptdata((const unsigned char*)defaultbranchprefixed.buf, defaultbranchprefixed.len, defaultbranchencrypted, &defaultbranchencryptedlen);
+	odb_write_object(the_repository->objects, defaultbranchencrypted, defaultbranchencryptedlen, OBJ_BLOB, &obj_def);
+	strbuf_release(&defaultbranchprefixed);
+	free(defaultbranchencrypted);
+}
+
+char* writemeta(char* output) {
+	struct object_id tid;
+	struct strbuf tb = STRBUF_INIT;
+	struct strbuf map = STRBUF_INIT;
+	struct strbuf mapprefixed = STRBUF_INIT;
+	unsigned char* mapencrypted = NULL;
+	size_t mapencryptedlen = 0;
+	struct object_id obj_readme;
+	struct object_id obj_map;
+        odb_write_object(the_repository->objects, CRYPTREADME, strlen(CRYPTREADME), OBJ_BLOB, &obj_readme);
+	strbuf_addf(&tb, "%o %s%c", 0100644, "README.md", '\0');
+	strbuf_add(&tb, obj_readme.hash, the_hash_algo->rawsz);
+	strbuf_addf(&tb, "%o %s%c", 0100644, "def", '\0');
+	strbuf_add(&tb, obj_def.hash, the_hash_algo->rawsz);
+	strbuf_addf(&tb, "%o %s%c", 0100644, "key", '\0');
+	strbuf_add(&tb, obj_key.hash, the_hash_algo->rawsz);
+	hashdatabuf(&mapprefixed, &map);
+	strbuf_add(&mapprefixed, map.buf, map.len);
+	mapencrypted = malloc(mapprefixed.len+16);
+	encryptdata((const unsigned char*)mapprefixed.buf, mapprefixed.len, mapencrypted, &mapencryptedlen);
+	odb_write_object(the_repository->objects, mapencrypted, mapencryptedlen, OBJ_BLOB, &obj_map);
+	strbuf_release(&mapprefixed);
+	free(mapencrypted);
+	strbuf_addf(&tb, "%o %s%c", 0100644, "map", '\0');
+	strbuf_add(&tb, obj_map.hash, the_hash_algo->rawsz);
+	strbuf_addf(&tb, "%o %s%c", 0100644, "msg", '\0');
+	strbuf_add(&tb, obj_msg.hash, the_hash_algo->rawsz);
+	strbuf_addf(&tb, "%o %s%c", 0100755, "sig", '\0');
+	strbuf_add(&tb, obj_sig.hash, the_hash_algo->rawsz);
+	strbuf_addf(&tb, "%o %s%c", 0100644, "ver", '\0');
+	strbuf_add(&tb, obj_ver.hash, the_hash_algo->rawsz);
+	odb_write_object(the_repository->objects, tb.buf, tb.len, OBJ_TREE, &tid);
+	strbuf_release(&tb);
+	memcpy(output, oid_to_hex(&tid), 41);
+	return output;
+}
+
+int encrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
+		       struct string_list *recipients)
+{
+	struct child_process gpg = CHILD_PROCESS_INIT;
+	int ret;
+	const char *cp;
+	struct strbuf gpg_status = STRBUF_INIT;
+	struct string_list_item *item;
+
+	strvec_pushl(&gpg.args, "gpg", "-e", "--status-fd=2", NULL);
+
+	for_each_string_list_item(item, recipients) {
+		strvec_pushl(&gpg.args, "-r", item->string, NULL);
+	}
+
+	sigchain_push(SIGPIPE, SIG_IGN);
+	ret = pipe_command(&gpg, buffer->buf, buffer->len,
+			   output, 1024, &gpg_status, 0);
+	sigchain_pop(SIGPIPE);
+
+	for (cp = gpg_status.buf;
+	     cp && (cp = strstr(cp, "[GNUPG:] BEGIN_ENCRYPTION "));
+	     cp++) {
+		if (cp == gpg_status.buf || cp[-1] == '\n')
+			break;
+	}
+
+	ret |= !cp;
+	if (ret) {
+		error(_("gpg failed to encrypt the data:\n%s"),
+		      gpg_status.len ? gpg_status.buf : "(no gpg output)");
+		strbuf_release(&gpg_status);
+		return -1;
+	}
+
+	strbuf_release(&gpg_status);
+	return 0;
 }
 
 int cmd_main(int argc, const char** argv) {

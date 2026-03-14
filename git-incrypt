@@ -35,6 +35,7 @@ import pygit2
 plugin = ctypes.cdll.LoadLibrary(os.path.join(os.path.dirname(__file__),
                                               'incrypt-plugin.so'))
 plugin.setcryptkey.argtypes = [ctypes.c_void_p]
+plugin.getcryptkey.restype = ctypes.c_void_p
 plugin.encryptdata.argtypes = [
     ctypes.c_void_p, ctypes.c_size_t,
     ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
@@ -54,10 +55,11 @@ plugin.hashdatahex.restype = ctypes.c_char_p
 plugin.globalinit.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 plugin.initbare.argtypes = [ctypes.c_char_p]
 plugin.mktemplate.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
-                              ctypes.c_char_p, ctypes.c_char_p,
-                              ctypes.c_char_p]
+                              ctypes.c_char_p, ctypes.c_char_p]
 plugin.mktemplate.restype = ctypes.c_char_p
 plugin.fetchpattern.argtypes = [ctypes.c_char]
+plugin.writemeta.argtypes = [ctypes.c_char_p]
+plugin.writemeta.restype = ctypes.c_char_p
 
 if not hasattr(pygit2.enums, 'FileMode'):
     class FileMode(enum.IntFlag):
@@ -81,31 +83,28 @@ if not hasattr(pygit2.enums, 'ObjectType'):
     pygit2.enums.ObjectType = ObjectType
 
 
-def encryptdata(data: bytes, key: bytes) -> (bytes, bytes):
+def encryptdata(data: bytes) -> bytes:
     'encrypt raw data'
-    plugin.setcryptkey(key)
     output = ctypes.create_string_buffer(len(data) + 16)
     poutput = ctypes.c_void_p(ctypes.addressof(output))
     outlen = ctypes.c_size_t(0)
     poutlen = ctypes.pointer(outlen)
-    plugin.encryptdata(data, len(data), poutput, poutlen, key)
+    plugin.encryptdata(data, len(data), poutput, poutlen)
     return output.raw[:poutlen.contents.value]
 
 
-def decryptdata(ciphertext: bytes, key: bytes) -> bytes:
+def decryptdata(ciphertext: bytes) -> bytes:
     'decrypt raw data'
-    plugin.setcryptkey(key)
     output = ctypes.create_string_buffer(len(ciphertext) + 16)
     poutput = ctypes.c_void_p(ctypes.addressof(output))
     outlen = ctypes.c_size_t(0)
     poutlen = ctypes.pointer(outlen)
-    plugin.decryptdata(ciphertext, len(ciphertext), poutput, poutlen, key)
+    plugin.decryptdata(ciphertext, len(ciphertext), poutput, poutlen)
     return output.raw[:poutlen.contents.value]
 
 
-def encryptrefname(ref, key):
+def encryptrefname(ref):
     'encrypt a refname'
-    plugin.setcryptkey(key)
     output = ctypes.create_string_buffer(
         math.ceil((20 + len(ref) + 16) * 4 / 3) + 1)
     poutput = ctypes.c_void_p(ctypes.addressof(output))
@@ -113,9 +112,8 @@ def encryptrefname(ref, key):
     return output.value.decode('utf-8')
 
 
-def decryptrefname(ref, key):
+def decryptrefname(ref):
     'decrypt a refname'
-    plugin.setcryptkey(key)
     output = ctypes.create_string_buffer(math.floor(len(ref) * 3 / 4) - 20 + 1)
     poutput = ctypes.c_void_p(ctypes.addressof(output))
     plugin.decryptrefname(ref.encode('utf-8'), poutput)
@@ -137,27 +135,6 @@ def sha1hex(data):
     return plugin.hashdatahex(data, len(data), poutput).decode('utf-8')
 
 
-# pylint: disable=pointless-string-statement
-'''
-mykey = b'x123456789abcdefy123456789abcdefz123456789abcdef'
-plugin.setcryptkey(mykey)
-orig = 'o?o?o?~~~a'
-print(orig)
-encoded = encryptrefname(orig, mykey)
-print(encoded)
-print(decryptrefname(encoded, mykey))
-output = ctypes.create_string_buffer(100)
-poutput = ctypes.c_void_p(ctypes.addressof(output))
-outlen = ctypes.c_size_t(0)
-poutlen = ctypes.pointer(outlen)
-plugin.decryptrefname(('refs/heads/' + encoded).encode('utf-8'), poutput)
-print(output.value)
-plugin.decryptrefname(encoded.encode('utf-8'), poutput)
-print(output.value)
-sys.exit(0)
-'''
-
-
 class CryptRepo:
     'encrypted repository'
     verbosityflags = ('-q', '-q', '-v', '-vv', '-vvv')
@@ -167,17 +144,12 @@ class CryptRepo:
         plugin.globalinit(clearname.encode('utf-8'), url.encode('utf-8'))
         if init:
             plugin.initbare(clearname.encode('utf-8'))
-            output = ctypes.create_string_buffer(41)
-            poutput = ctypes.c_char_p(ctypes.addressof(output))
-            plugin.mktemplate(
+            template = plugin.mktemplate(
                 init.name.encode('utf-8') if init.name else None,
                 init.email.encode('utf-8') if init.email else None,
                 init.date.encode('utf-8') if init.date else None,
-                '\n\n'.join(init.m).encode('utf-8') if init.m else None,
-                poutput)
+                '\n\n'.join(init.m).encode('utf-8') if init.m else None)
             self.repo = pygit2.Repository('.')
-            template = self.repo.get(
-                output.value.decode('utf-8')).read_raw().split(b'\n', 1)[1]
             self.meta = MetaData(self.repo).init(
                 init.keys, template, 'refs/heads/master')
             self.trust(force=True, sign=True)
@@ -264,7 +236,7 @@ class CryptRepo:
         'list all cleartext references'
         def decryptobject(oid):
             'decrypt an object'
-            raw = decryptdata(self.repo.get(oid).read_raw(), self.meta.key)
+            raw = decryptdata(self.repo.get(oid).read_raw())
             return self.repo.odb.write(raw[20], raw[21:])
         plugin.fetchpattern('*'.encode('utf-8')[0])
         self.meta.read()
@@ -272,7 +244,7 @@ class CryptRepo:
         # [ dec(crypt) , prefdec(crypt), crypt ]
         refs = [[r[0], plugin.getprefix().decode('utf-8') + '0/' + r[0],
                  self.repo.revparse_single(r[1])]
-                for r in [[decryptrefname(r, self.meta.key), r] for r in
+                for r in [[decryptrefname(r), r] for r in
                           filter(lambda r: len(r) >
                                  len(plugin.getprefix().decode('utf-8'))+3 and
                                  r.startswith(plugin.getprefix().
@@ -286,8 +258,7 @@ class CryptRepo:
             decryptobject)
         for r in refs:
             self.repo.create_reference(
-                r[1], decryptdata(r[2].tree['0'].read_raw(),
-                                  self.meta.key)[0:20].hex(), force=True)
+                r[1], decryptdata(r[2].tree['0'].read_raw())[0:20].hex(), force=True)
         expected = [r[1] for r in refs]
         result = [['HEAD', f'@{self.meta.defaultbranch}']]
         for r in self.repo.references:
@@ -307,7 +278,7 @@ class CryptRepo:
             clear = self.repo.get(oid)
             cryptobjs[clear.id] = self.repo.create_blob(encryptdata(
                 clear.id.raw + clear.type.to_bytes(1, byteorder='big') +
-                clear.read_raw(), self.meta.key))
+                clear.read_raw()))
 
         def createcommit(oid):
             'create a commit'
@@ -345,7 +316,7 @@ class CryptRepo:
                   ':refs/heads/' + r[3],
                   self.repo.revparse_single(r[0]) if r[0] else None]
                  for r in [[r[0], r[1], r[2],
-                            encryptrefname(r[1], self.meta.key)]
+                            encryptrefname(r[1])]
                            for r in refs]]
         cryptmap = self.meta.readmap()
         colobjs = CryptRepo._revlist(
@@ -473,8 +444,13 @@ class MetaData:
     def init(self, gpgkeys, template, defaultbranch):
         'initialize the metadata'
         self.files = {}
+        plugin.metainit()
+        output = ctypes.create_string_buffer(41)
+        poutput = ctypes.c_char_p(ctypes.addressof(output))
+        plugin.writemeta(poutput)
+        blubs = self.repo.get(output.value.decode('utf-8')).id
         self.files['ver'] = self.repo.create_blob(MetaData.VER)
-        self.key = os.urandom(48)
+        self.key = ctypes.string_at(plugin.getcryptkey(), 48) # os.urandom(48)
         keyhashbase = MetaData.KEYVER + b'\x00' + self.key
         self.keyhash = sha1hex(keyhashbase)
         cryptedkey = self._gpg(
@@ -483,12 +459,15 @@ class MetaData:
         self.files['sig'] = self.repo.TreeBuilder().write()
         self.template = template
         self.files['msg'] = self.repo.create_blob(encryptdata(
-            sha1(template) + template, self.key))
+            sha1(template) + template))
         self.defaultbranch = defaultbranch
         encodedbranch = defaultbranch.encode('utf-8')
         self.files['def'] = self.repo.create_blob(encryptdata(
-            sha1(encodedbranch) + encodedbranch, self.key))
-        self.write()
+            sha1(encodedbranch) + encodedbranch))
+        # self.write()
+        commit = self.secretcommit(blubs, [])
+        self.repo.create_reference(
+            plugin.getprefix().decode('utf-8') + '1/_', commit, force=True)
         return self
 
     def addkey(self, gpgkeys):
@@ -518,6 +497,7 @@ class MetaData:
                 f'Key hash is {newkeyhash}, was {self.keyhash}'
         self.keyhash = newkeyhash
         keyver, self.key = data.split(b'\x00', 1)
+        plugin.setcryptkey(self.key)
         assert keyver == MetaData.KEYVER, \
             f'Key format is {keyver}, expected {MetaData.KEYVER}'
         keydata = self._gpg(['-q', '--list-packets'],
@@ -529,12 +509,12 @@ class MetaData:
         self.files['sig'] = tree['sig'].id
         obj = tree['msg']
         self.files['msg'] = obj.id
-        data = decryptdata(obj.read_raw(), self.key)
+        data = decryptdata(obj.read_raw())
         assert sha1(data[20:]) == data[0:20], 'corrupted template'
         self.template = data[20:]
         obj = tree['def']
         self.files['def'] = obj.id
-        data = decryptdata(obj.read_raw(), self.key)
+        data = decryptdata(obj.read_raw())
         assert sha1(data[20:]) == data[0:20], \
             'corrupted default branch information'
         self.defaultbranch = data[20:].decode('utf-8')
@@ -543,8 +523,7 @@ class MetaData:
     def sign(self):
         'sign key'
         sig = self._gpg(['-q', '-b', '-s'], self.key)
-        sigfile = self.repo.create_blob(encryptdata(
-            sha1(sig) + sig, self.key))
+        sigfile = self.repo.create_blob(encryptdata(sha1(sig) + sig))
         sigtree = self.repo.TreeBuilder(self.repo.get(self.files['sig']))
         sigtree.insert(str(sigfile), sigfile, pygit2.enums.FileMode.BLOB)
         self.files['sig'] = sigtree.write()
@@ -553,7 +532,7 @@ class MetaData:
         'check signatures'
         trusted = False
         for sig in self.repo.get(self.files['sig']):
-            decrypted = decryptdata(sig.read_raw(), self.key)
+            decrypted = decryptdata(sig.read_raw())
             assert sha1(decrypted[20:]) == decrypted[0:20], \
                 'corrupted signature'
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -592,8 +571,7 @@ class MetaData:
         rawdata = b''
         for a, b in cryptmap.items():
             rawdata += bytes.fromhex(a) + bytes.fromhex(b)
-        mapfile = self.repo.create_blob(encryptdata(
-            sha1(rawdata) + rawdata, self.key))
+        mapfile = self.repo.create_blob(encryptdata(sha1(rawdata) + rawdata))
         collector.insert('map', mapfile, pygit2.enums.FileMode.BLOB)
         readmefile = self.repo.create_blob(
             ctypes.c_char_p.in_dll(plugin, 'CRYPTREADME').value)
@@ -610,7 +588,7 @@ class MetaData:
             plugin.getprefix().decode('utf-8') + '1/_').tree
         o = 20 if reverse else 0
         processed = {}
-        rawdata = decryptdata(tree['map'].read_raw(), self.key)
+        rawdata = decryptdata(tree['map'].read_raw())
         for i in range(20, len(rawdata), 40):
             target = rawdata[i+20-o:i+40-o].hex()
             if target in self.repo:
