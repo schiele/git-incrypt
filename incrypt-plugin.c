@@ -52,6 +52,7 @@ char* writemeta(char* output);
 int encrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
 		       struct string_list *recipients);
 void myupdaterefs(const char* refname, const char* oid);
+void encryptstrbuf2obj(struct strbuf* in, struct object_id* obj);
 
 /*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
 "This is an encrypted git repository.  You can clone it, but you will not be\n"
@@ -331,6 +332,19 @@ char* decryptrefname(const char* input, char* output) {
 	return output;
 }
 
+void encryptstrbuf2obj(struct strbuf* in, struct object_id* obj) {
+	struct strbuf prefixed = STRBUF_INIT;
+	unsigned char* encrypted = NULL;
+	size_t encryptedlen = 0;
+	hashdatabuf(&prefixed, in);
+	strbuf_addbuf(&prefixed, in);
+	encrypted = malloc(prefixed.len+16);
+	encryptdata((const unsigned char*)prefixed.buf, prefixed.len, encrypted, &encryptedlen);
+	odb_write_object(the_repository->objects, encrypted, encryptedlen, OBJ_BLOB, obj);
+	strbuf_release(&prefixed);
+	free(encrypted);
+}
+
 unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 			unsigned char* output) {
 	struct git_hash_ctx c;
@@ -412,15 +426,8 @@ struct object_id obj_def;
 void metainit(void) {
 	struct strbuf keybuf = STRBUF_INIT;
 	struct strbuf output_buf = STRBUF_INIT;
-	//char* key[48];
 	struct string_list recipients = STRING_LIST_INIT_NODUP;
-	struct strbuf templateprefixed = STRBUF_INIT;
-	unsigned char* templateencrypted = NULL;
-	size_t templateencryptedlen = 0;
 	struct strbuf defaultbranch = STRBUF_INIT;
-	struct strbuf defaultbranchprefixed = STRBUF_INIT;
-	unsigned char* defaultbranchencrypted = NULL;
-	size_t defaultbranchencryptedlen = 0;
         odb_write_object(the_repository->objects, ver, strlen(ver), OBJ_BLOB, &obj_ver);
 	strbuf_add(&keybuf, keyver, 15);
 	getrandom(key, 48, 0);
@@ -433,21 +440,9 @@ void metainit(void) {
 	odb_write_object(the_repository->objects, output_buf.buf, output_buf.len, OBJ_BLOB, &obj_key);
 	strbuf_release(&output_buf);
 	odb_write_object(the_repository->objects, NULL, 0, OBJ_TREE, &obj_sig);
-	hashdatabuf(&templateprefixed, &template);
-	strbuf_add(&templateprefixed, template.buf, template.len);
-	templateencrypted = malloc(templateprefixed.len+16);
-	encryptdata((const unsigned char*)templateprefixed.buf, templateprefixed.len, templateencrypted, &templateencryptedlen);
-	odb_write_object(the_repository->objects, templateencrypted, templateencryptedlen, OBJ_BLOB, &obj_msg);
-	strbuf_release(&templateprefixed);
-	free(templateencrypted);
+	encryptstrbuf2obj(&template, &obj_msg);
 	strbuf_addf(&defaultbranch, "refs/heads/%s", "master");
-	hashdatabuf(&defaultbranchprefixed, &defaultbranch);
-	strbuf_add(&defaultbranchprefixed, defaultbranch.buf, defaultbranch.len);
-	defaultbranchencrypted = malloc(defaultbranchprefixed.len+16);
-	encryptdata((const unsigned char*)defaultbranchprefixed.buf, defaultbranchprefixed.len, defaultbranchencrypted, &defaultbranchencryptedlen);
-	odb_write_object(the_repository->objects, defaultbranchencrypted, defaultbranchencryptedlen, OBJ_BLOB, &obj_def);
-	strbuf_release(&defaultbranchprefixed);
-	free(defaultbranchencrypted);
+	encryptstrbuf2obj(&defaultbranch, &obj_def);
 }
 
 static void secretcommit(struct object_id* tid, struct object_id* oid) {
@@ -463,9 +458,6 @@ char* writemeta(char* output) {
 	struct object_id tid;
 	struct strbuf tb = STRBUF_INIT;
 	struct strbuf map = STRBUF_INIT;
-	struct strbuf mapprefixed = STRBUF_INIT;
-	unsigned char* mapencrypted = NULL;
-	size_t mapencryptedlen = 0;
 	struct object_id obj_readme;
 	struct object_id obj_map;
 	struct strbuf refname = STRBUF_INIT;
@@ -476,13 +468,7 @@ char* writemeta(char* output) {
 	strbuf_add(&tb, obj_def.hash, the_hash_algo->rawsz);
 	strbuf_addf(&tb, "%o %s%c", 0100644, "key", '\0');
 	strbuf_add(&tb, obj_key.hash, the_hash_algo->rawsz);
-	hashdatabuf(&mapprefixed, &map);
-	strbuf_add(&mapprefixed, map.buf, map.len);
-	mapencrypted = malloc(mapprefixed.len+16);
-	encryptdata((const unsigned char*)mapprefixed.buf, mapprefixed.len, mapencrypted, &mapencryptedlen);
-	odb_write_object(the_repository->objects, mapencrypted, mapencryptedlen, OBJ_BLOB, &obj_map);
-	strbuf_release(&mapprefixed);
-	free(mapencrypted);
+	encryptstrbuf2obj(&map, &obj_map);
 	strbuf_addf(&tb, "%o %s%c", 0100644, "map", '\0');
 	strbuf_add(&tb, obj_map.hash, the_hash_algo->rawsz);
 	strbuf_addf(&tb, "%o %s%c", 0100644, "msg", '\0');
