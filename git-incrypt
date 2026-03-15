@@ -144,6 +144,7 @@ class CryptRepo:
         plugin.globalinit(clearname.encode('utf-8'), url.encode('utf-8'))
         if init:
             plugin.initbare(clearname.encode('utf-8'))
+            # plugin.setup_git_directory()
             plugin.mktemplate(
                 init.name.encode('utf-8') if init.name else None,
                 init.email.encode('utf-8') if init.email else None,
@@ -160,6 +161,7 @@ class CryptRepo:
         else:
             self.repo = pygit2.Repository('.')
             plugin.fetchpattern('_'.encode('utf-8')[0])
+            plugin.setup_git_directory()
             self.meta = MetaData(self.repo)
             if forcetrust:
                 self.trust(force=forcetrust)
@@ -456,6 +458,7 @@ class MetaData:
 
     def read(self):
         'read the metadata'
+        plugin.readmeta()
         self.files = {}
         tree = self.repo.revparse_single(
             plugin.getprefix().decode('utf-8') + '1/_').tree
@@ -473,7 +476,6 @@ class MetaData:
                 f'Key hash is {newkeyhash}, was {self.keyhash}'
         self.keyhash = newkeyhash
         keyver, self.key = data.split(b'\x00', 1)
-        plugin.setcryptkey(self.key)
         assert keyver == MetaData.KEYVER, \
             f'Key format is {keyver}, expected {MetaData.KEYVER}'
         keydata = self._gpg(['-q', '--list-packets'],

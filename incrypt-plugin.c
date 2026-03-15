@@ -22,6 +22,7 @@
 #include "gettext.h"
 //#include "config.h"
 //#include "environment.h"
+#include "object-name.h"
 
 void globalinit(const char* dir, const char* url_arg);
 int set_option(const char *name, size_t namelen, const char *value);
@@ -48,11 +49,15 @@ void initbare(const char* dir);
 char* mktemplate(const char* name, const char* email, const char* date, const char* msg);
 void fetchpattern(const char pattern);
 void metainit(void);
+void readmeta(void);
 char* writemeta(char* output);
 int encrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
 		       struct string_list *recipients);
+static int decrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
+			      struct strvec *key_ids);
 void myupdaterefs(const char* refname, const char* oid);
 void encryptstrbuf2obj(struct strbuf* in, struct object_id* obj);
+void decryptobj2strbuf(struct object_id* obj, struct strbuf* out);
 
 /*static*/ const char* CRYPTREADME = "# 401 Unauthorized\n\n"
 "This is an encrypted git repository.  You can clone it, but you will not be\n"
@@ -71,7 +76,10 @@ static struct strbuf url = STRBUF_INIT;
 static struct strbuf prefix = STRBUF_INIT;
 
 void globalinit(const char* dir, const char* url_arg) {
-	chdir(dir);
+	//int nongit;
+	if (chdir(dir))
+		die(_("Could not chdir to '%s'"), dir);
+	//setup_git_directory_gently(&nongit);
 	options.verbosity = 1;
 	options.progress = !!isatty(2);
 	options.atomic = 0;
@@ -345,6 +353,25 @@ void encryptstrbuf2obj(struct strbuf* in, struct object_id* obj) {
 	free(encrypted);
 }
 
+void decryptobj2strbuf(struct object_id* obj, struct strbuf* out) {
+	char* data = NULL;
+	unsigned long datalen;
+	enum object_type type;
+	unsigned char* decrypted = NULL;
+	size_t decryptedlen = 0;
+	char hash[GIT_SHA1_RAWSZ];
+	data = odb_read_object(the_repository->objects, obj, &type, &datalen);
+	decrypted = malloc(datalen+16);
+	decryptdata((const unsigned char*)data, datalen, decrypted, &decryptedlen);
+	hashdata((const unsigned char*)decrypted+GIT_SHA1_RAWSZ, decryptedlen-GIT_SHA1_RAWSZ,
+		 (unsigned char*)hash);
+	if (memcmp(decrypted, hash, GIT_SHA1_RAWSZ))
+		die("Corrupted encryption data!\n");
+	strbuf_add(out, decrypted+GIT_SHA1_RAWSZ, decryptedlen-GIT_SHA1_RAWSZ);
+	free(data);
+	free(decrypted);
+}
+
 unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 			unsigned char* output) {
 	struct git_hash_ctx c;
@@ -377,6 +404,7 @@ void initbare(const char* dir) {
 }
 
 struct strbuf template = STRBUF_INIT;
+struct strbuf defaultbranch = STRBUF_INIT;
 
 char* mktemplate(const char* name, const char* email, const char* date, const char* msg) {
         if (!msg)
@@ -427,13 +455,14 @@ void metainit(void) {
 	struct strbuf keybuf = STRBUF_INIT;
 	struct strbuf output_buf = STRBUF_INIT;
 	struct string_list recipients = STRING_LIST_INIT_NODUP;
-	struct strbuf defaultbranch = STRBUF_INIT;
         odb_write_object(the_repository->objects, ver, strlen(ver), OBJ_BLOB, &obj_ver);
 	strbuf_add(&keybuf, keyver, 15);
-	getrandom(key, 48, 0);
+	if (!getrandom(key, 48, 0))
+		die("getrandom failed");
 	strbuf_add(&keybuf, key, 48);
 	/* This hard coded value needs to be replaced later! */
 	string_list_append(&recipients, "5A8A11E44AD2A1623B84E5AFC5C0C5C7218D18D7");
+	string_list_append(&recipients, "F2AE0B6CB4089F15A217F12D121F59FB963341A4");
 	if (encrypt_buffer_gpg(&keybuf, &output_buf, &recipients) < 0)
     		die("Encryption failed");
 	strbuf_release(&keybuf);
@@ -451,6 +480,60 @@ static void secretcommit(struct object_id* tid, struct object_id* oid) {
 	strbuf_add(&commit, template.buf, template.len);
 	odb_write_object(the_repository->objects, commit.buf, commit.len, OBJ_COMMIT, oid);
 	strbuf_release(&commit);
+}
+
+void readmeta(void) {
+	struct strbuf name = STRBUF_INIT;
+	struct strbuf databuf = STRBUF_INIT;
+	struct strbuf output_buf = STRBUF_INIT;
+	struct strvec gpgkeys = STRVEC_INIT;
+	char* data = NULL;
+	unsigned long datalen;
+	enum object_type type;
+	size_t keyverlen = strlen(keyver);
+	fprintf(stderr, "===== READ =====\n");
+	strbuf_addf(&name, "%s1/_:%s", prefix.buf, "ver");
+	repo_get_oid(the_repository, name.buf, &obj_ver);
+	fprintf(stderr, "ver: %s\n", oid_to_hex(&obj_ver));
+	data = odb_read_object(the_repository->objects, &obj_ver, &type, &datalen);
+	if (strlen(ver) != datalen || memcmp(data, ver, datalen))
+		die("Version format is %s, expected %s\n", data, ver);
+	strbuf_release(&name);
+	free(data);
+	strbuf_addf(&name, "%s1/_:%s", prefix.buf, "key");
+	repo_get_oid(the_repository, name.buf, &obj_key);
+	fprintf(stderr, "key: %s\n", oid_to_hex(&obj_key));
+	data = odb_read_object(the_repository->objects, &obj_key, &type, &datalen);
+	strbuf_add(&databuf, data, datalen);
+	if (decrypt_buffer_gpg(&databuf, &output_buf, &gpgkeys) < 0)
+    		die("Decryption of key failed");
+	if (strncmp(keyver, output_buf.buf, keyverlen))
+		die("Key format is %s, expected %s\n", output_buf.buf, keyver);
+	memcpy(key, output_buf.buf + keyverlen + 1, 48);
+	for (size_t i = 0; i < gpgkeys.nr; i++) {
+		fprintf(stderr, "Message was encrypted to key: %s\n", gpgkeys.v[i]);
+	}
+	strbuf_release(&name);
+	free(data);
+	strbuf_addf(&name, "%s1/_:%s", prefix.buf, "sig");
+	repo_get_oid(the_repository, name.buf, &obj_sig);
+	fprintf(stderr, "sig: %s\n", oid_to_hex(&obj_sig));
+	strbuf_release(&name);
+	strbuf_addf(&name, "%s1/_:%s", prefix.buf, "msg");
+	repo_get_oid(the_repository, name.buf, &obj_msg);
+	fprintf(stderr, "msg: %s\n", oid_to_hex(&obj_msg));
+	strbuf_release(&template);
+	decryptobj2strbuf(&obj_msg, &template);
+	fprintf(stderr, "template: %s\n", template.buf);
+	strbuf_release(&name);
+	strbuf_addf(&name, "%s1/_:%s", prefix.buf, "def");
+	repo_get_oid(the_repository, name.buf, &obj_def);
+	fprintf(stderr, "def: %s\n", oid_to_hex(&obj_def));
+	strbuf_release(&defaultbranch);
+	decryptobj2strbuf(&obj_def, &defaultbranch);
+	fprintf(stderr, "defaultbranch: %s\n", defaultbranch.buf);
+	strbuf_release(&name);
+	fprintf(stderr, "================\n");
 }
 
 char* writemeta(char* output) {
@@ -482,7 +565,7 @@ char* writemeta(char* output) {
 	secretcommit(&tid, &oid);
 	strbuf_addbuf(&refname, &prefix);
 	strbuf_addstr(&refname, "1/_");
-	// refs_update_ref(get_main_ref_store(the_repository), NULL, refname.buf,
+	//refs_update_ref(get_main_ref_store(the_repository), NULL, refname.buf,
 	//		&oid, NULL, 0, UPDATE_REFS_MSG_ON_ERR);
 	myupdaterefs(refname.buf, oid_to_hex(&oid));
 	strbuf_release(&refname);
@@ -526,6 +609,56 @@ int encrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
 	}
 
 	strbuf_release(&gpg_status);
+	return 0;
+}
+
+static int decrypt_buffer_gpg(struct strbuf *buffer, struct strbuf *output,
+			      struct strvec *key_ids)
+{
+	struct child_process gpg = CHILD_PROCESS_INIT;
+	int ret;
+	const char *cp;
+	struct strbuf gpg_status = STRBUF_INIT;
+
+	strvec_pushl(&gpg.args, "gpg", "--decrypt", "--status-fd=2", "--quiet", NULL);
+
+	sigchain_push(SIGPIPE, SIG_IGN);
+	ret = pipe_command(&gpg, buffer->buf, buffer->len,
+			   output, 1024, &gpg_status, 0);
+	sigchain_pop(SIGPIPE);
+
+	for (cp = gpg_status.buf;
+	     cp && (cp = strstr(cp, "[GNUPG:] DECRYPTION_OKAY"));
+	     cp++) {
+		if (cp == gpg_status.buf || cp[-1] == '\n')
+			break;
+	}
+
+	ret |= !cp;
+	if (ret) {
+		error(_("gpg failed to decrypt the data:\n%s"),
+		      gpg_status.len ? gpg_status.buf : "(no gpg output)");
+		strbuf_release(&gpg_status);
+		return -1;
+	}
+
+	for (cp = gpg_status.buf; cp && *cp; ) {
+		const char *next_line = strchr(cp, '\n');
+		const char *found;
+
+		if (skip_prefix(cp, "[GNUPG:] ENC_TO ", &found)) {
+			size_t len = strcspn(found, " \n\r");
+			strvec_pushf(key_ids, "%.*s", (int)len, found);
+		}
+
+		if (next_line)
+			cp = next_line + 1;
+		else
+			break;
+	}
+
+	strbuf_release(&gpg_status);
+
 	return 0;
 }
 
