@@ -43,6 +43,7 @@ unsigned char* hashdata(const unsigned char* input, size_t inputlen,
 char* hashdatahex(const unsigned char* input, size_t inputlen,
 		  char* output);
 void hashdatabuf(struct strbuf* out, struct strbuf* in);
+void hashdatabufhex(struct strbuf* out, struct strbuf* in);
 void initbare(const char* dir);
 char* mktemplate(const char* name, const char* email, const char* date, const char* msg);
 void fetchpattern(const char pattern);
@@ -65,19 +66,18 @@ struct options {
 };
 static struct options options;
 
-static char* url = NULL;
-static char prefix[] = "refs/incrypt/......................................../";
+static struct strbuf url = STRBUF_INIT;
+static struct strbuf prefix = STRBUF_INIT;
 
 void globalinit(const char* dir, const char* url_arg) {
-	size_t urllen = strlen(url_arg);
 	chdir(dir);
 	options.verbosity = 1;
 	options.progress = !!isatty(2);
 	options.atomic = 0;
-	url = malloc(urllen + 1);
-	memcpy(url, url_arg, urllen + 1);
-	hashdatahex((const unsigned char*)url, urllen, prefix + 13);
-	prefix[13 + GIT_SHA1_HEXSZ] = '/';
+	strbuf_addstr(&url, url_arg);
+	strbuf_addstr(&prefix, "refs/incrypt/");
+	hashdatabufhex(&prefix, &url);
+	strbuf_addch(&prefix, '/');
 }
 
 /*static*/ int set_option(const char *name, size_t namelen, const char *value)
@@ -130,11 +130,11 @@ int getatomic(void)
 }
 
 const char* geturl(void) {
-	return url;
+	return url.buf;
 }
 
 const char* getprefix(void) {
-	return prefix;
+	return prefix.buf;
 }
 
 static unsigned char key[48];
@@ -352,6 +352,12 @@ void hashdatabuf(struct strbuf* out, struct strbuf* in) {
 	strbuf_add(out, hash, GIT_SHA1_RAWSZ);
 }
 
+void hashdatabufhex(struct strbuf* out, struct strbuf* in) {
+	unsigned char hash[GIT_SHA1_RAWSZ];
+	hashdata((const unsigned char*)in->buf, in->len, hash);
+	strbuf_addstr(out, hash_to_hex_algop(hash, &hash_algos[GIT_HASH_SHA1]));
+}
+
 void initbare(const char* dir) {
 	init_db(dir, NULL, NULL, GIT_HASH_UNKNOWN, REF_STORAGE_FORMAT_UNKNOWN, NULL, -1, 0);
 }
@@ -374,14 +380,13 @@ static const char* progressflags[2] = {"--no-progress", "--progress"};
 void fetchpattern(const char pattern) {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 
-	char refspec[14+GIT_SHA1_HEXSZ+14+4];
-	memcpy(refspec, "+refs/heads/.:refs/incrypt/......................................../1/.", 14+GIT_SHA1_HEXSZ+14+4);
-	refspec[12] = refspec[70] = pattern;
-	memcpy(refspec + 14, prefix, GIT_SHA1_HEXSZ + 14);
+	struct strbuf refspec = STRBUF_INIT;
+	strbuf_addf(&refspec, "+refs/heads/%c:%s1/%c", pattern, prefix.buf, pattern);
 
 	strvec_pushl(&cmd.args, "fetch", verbosityflags[options.verbosity],
 		     progressflags[options.progress], "--no-write-fetch-head",
-		     "-p", url, refspec, NULL);
+		     "-p", url.buf, refspec.buf, NULL);
+	strbuf_release(&refspec);
 
 	cmd.git_cmd = 1;
 	//This causes a crash! : cmd.close_object_store = 1;
@@ -489,12 +494,13 @@ char* writemeta(char* output) {
 	odb_write_object(the_repository->objects, tb.buf, tb.len, OBJ_TREE, &tid);
 	strbuf_release(&tb);
 	secretcommit(&tid, &oid);
-	strbuf_addf(&refname, "%s1/_", prefix);
+	strbuf_addbuf(&refname, &prefix);
+	strbuf_addstr(&refname, "1/_");
 	// refs_update_ref(get_main_ref_store(the_repository), NULL, refname.buf,
 	//		&oid, NULL, 0, UPDATE_REFS_MSG_ON_ERR);
 	myupdaterefs(refname.buf, oid_to_hex(&oid));
 	strbuf_release(&refname);
-	memcpy(output, oid_to_hex(&oid), 41);
+	oid_to_hex_r(output, &oid);
 	return output;
 }
 
